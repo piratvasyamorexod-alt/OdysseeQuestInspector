@@ -491,12 +491,19 @@ enum class Ink : unsigned long {
     Missed = 0xFFEAA291,
 };
 
+static void ReplaceYoForJournalFont(std::string& text) {
+    // The Russian journal font lacks the Windows-1251 glyphs for Ё and ё.
+    std::replace(text.begin(), text.end(), '\xA8', '\xC5');
+    std::replace(text.begin(), text.end(), '\xB8', '\xE5');
+}
+
 static int TextWidth(const std::string& text) {
     return journal->anx(journal->GetFont()->GetFontX(zSTRING(text.c_str())));
 }
 
 static std::string FitText(std::string text, int width) {
     if (width <= 0) return {};
+    ReplaceYoForJournalFont(text);
     if (TextWidth(text) <= width) return text;
     const int ellipsis = TextWidth("...");
     if (ellipsis > width) return {};
@@ -512,7 +519,8 @@ static void Text(int x, int y, const std::string& text, int width, Ink ink = Ink
     journal->CreateText(x, y, zSTRING(fitted.c_str()), 0.0f, color, 0, 1);
 }
 
-static std::vector<std::string> WrapText(const std::string& text, int width) {
+static std::vector<std::string> WrapText(std::string text, int width) {
+    ReplaceYoForJournalFont(text);
     std::vector<std::string> lines;
     std::string line;
     for (std::size_t start = 0; start < text.size();) {
