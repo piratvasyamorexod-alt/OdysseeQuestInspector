@@ -247,7 +247,6 @@ static Start StartRule(QuestId quest) {
 
 static bool ClosedRule(QuestId quest, std::optional<int> flag) {
     switch (quest) {
-    case Errand: return flag == 3;
     case Rats: return flag == 3;
     case Staff: return flag == 4;
     case Fortress:
@@ -323,10 +322,34 @@ static const wchar_t* Reason(QuestId id, Evidence evidence) {
         switch (id) {
         case Fortress: return L"Знакомство с Сандроком закрыло задание у моста.";
         case Testament: return L"Началось поручение в Варанте. Завещание уже закрыто.";
-        case Errand: return L"Выбран вариант разговора, который провалил поручение.";
         default: return L"Вы отказались в диалоге. Предложение больше не появится.";
         }
     default: return L"Текущее состояние или доступность не подтверждены.";
+    }
+}
+
+static const wchar_t* WindowNotice(QuestId id) {
+    switch (id) {
+    case Fortress: return L"Сначала подойдите к мосту. Знакомство с Сандроком закроет этот старт.";
+    case Rats: return L"Отказ у Сандрока закрывает поручение.";
+    case Staff: return L"Отказ у Гигеса закрывает поручение.";
+    case Testament: return L"Поручение Болдуина в Варанте прерывает начатую цепочку.";
+    case Errand: return L"При отказе игра ставит провал. Сдать суп может быть ещё возможно.";
+    default: return nullptr;
+    }
+}
+
+static const wchar_t* Chain(QuestId id) {
+    switch (id) {
+    case Island:
+    case Wreck: return L"Алтарь Инноса > затонувший корабль > доклад Герноту";
+    case Wolf:
+    case Shrine: return L"Серый волк > подсказка Гигеса об алтаре > посох и корабль";
+    case Fleet:
+    case Provisions: return L"Флот орков > затонувший корабль > прощание с Сандроком > провиант";
+    case Library:
+    case Rats: return L"Разговор о крепости > библиотека и поручение о крысах";
+    default: return nullptr;
     }
 }
 
@@ -380,6 +403,9 @@ static void PaintQuests(int movement) {
     Text(details, Reason(id, questItems[id].result.evidence));
     Text(details + 1, quests[id].start);
     Text(details + 2, quests[id].finish);
+    const wchar_t* extra = beforeDeparture ? WindowNotice(id) : nullptr;
+    if (!extra) extra = Chain(id);
+    if (extra) Text(details + 3, extra);
 }
 
 static void PaintRaw() {
@@ -425,7 +451,6 @@ static Key previousKey{KEY_PGUP}, nextKey{KEY_PGDN};
 
 static void Loop() {
     if (loading || !zinput || !player || !screen || !parser || !ogame || !ogame->GetGameWorld()) return;
-    if (GetForegroundWindow() != hWndApp) return;
 
     const bool shift = zinput->KeyPressed(KEY_LSHIFT) || zinput->KeyPressed(KEY_RSHIFT);
     const bool filterPressed = filterKey.Pressed() && shift;
