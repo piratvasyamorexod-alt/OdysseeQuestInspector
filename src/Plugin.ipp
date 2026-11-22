@@ -401,6 +401,8 @@ public:
     explicit JournalView(oCGame& game) : zCView(296, 610, 7600, 6520), game(game) {
         SetFont(screen->GetFont());
         InsertBack(zSTRING("OQI_JOURNAL.TGA"));
+        SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
+        SetTransparency(255);
         // Use the engine pause with its built-in message suppressed.
         game.Pause();
         screen->InsertItem(this);
@@ -485,7 +487,7 @@ struct JournalLayout {
 
 enum class Ink : unsigned long {
     Paper = 0xFFF1DFC1,
-    Muted = 0xFFBBAA90,
+    Muted = 0xFFCCBFA9,
     Gold = 0xFFE9BD79,
     Done = 0xFFBCD19C,
     Missed = 0xFFEAA291,
