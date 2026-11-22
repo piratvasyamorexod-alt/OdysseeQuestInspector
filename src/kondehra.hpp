@@ -88,7 +88,7 @@ struct Result {
 inline Result Evaluate(QuestId quest, const Facts& facts) {
     // Every listed MIS symbol explicitly receives LOG_SUCCESS at a verified endpoint.
     if (facts.flag == 2 || facts.journal == Journal::Success) {
-        if (facts.windowClosed || facts.journal == Journal::Failure) {
+        if (facts.windowClosed || facts.journal == Journal::Failure || facts.flag == 3 || facts.flag == 4) {
             return {Status::Unknown, Evidence::Insufficient};
         }
         return {Status::Done, facts.flag == 2 ? Evidence::Script : Evidence::Journal};

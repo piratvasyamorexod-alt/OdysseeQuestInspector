@@ -29,6 +29,7 @@ int main() {
     Check(Evaluate(Fortress, {0, Journal::Absent, Start::Later, true}).status == Status::Missed);
     Check(Evaluate(Rats, {3, Journal::Absent, Start::Unknown, true}).status == Status::Missed);
     Check(Evaluate(Errand, {3, Journal::Failure, Start::Unknown}).status == Status::Unknown);
+    Check(Evaluate(Errand, {3, Journal::Success}).status == Status::Unknown);
     Check(Evaluate(Testament, {2, Journal::Failure, Start::Unknown, true}).status == Status::Unknown);
     Check(Evaluate(Wolf, {std::nullopt, Journal::Absent, Start::Yes}).status == Status::Unknown);
     Check(IncludeBeforeDeparture(Status::Missed));

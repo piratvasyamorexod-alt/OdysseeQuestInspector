@@ -184,13 +184,13 @@ static Start StartRule(QuestId quest) {
         if ((HasUnpackedItem("ITWR_PIRATENGOBLINFLOSS") && Value("PIRATENGOBLINSBUCH2GELESEN") == 0)
             || (HasUnpackedItem("ITWR_PIRATENGOBLINSCHATZ") && Value("PIRATENGOBLINSBUCHGELESEN") == 0
                 && Value("PIRATENGOBLINSSCHATZGEFUNDEN") == 0)) return Start::Yes;
-        break;
+        return Start::Unknown;
     case Ring:
-        if (HasUnpackedItem("ITWR_OLDSTORY1") && Value("READ_OLDSTORY1") == 0) return Start::Yes;
-        break;
+        return HasUnpackedItem("ITWR_OLDSTORY1") && Value("READ_OLDSTORY1") == 0
+            ? Start::Yes : Start::Unknown;
     case Testament:
-        if (HasUnpackedItem("ITWR_KOROFSKISTAGEBUCH") && Value("KOROFSKITAGEBUCH1GELESEN") == 0) return Start::Yes;
-        break;
+        return HasUnpackedItem("ITWR_KOROFSKISTAGEBUCH") && Value("KOROFSKITAGEBUCH1GELESEN") == 0
+            ? Start::Yes : Start::Unknown;
     default:
         break;
     }
