@@ -402,7 +402,7 @@ public:
         SetFont(screen->GetFont());
         InsertBack(zSTRING("OQI_JOURNAL.TGA"));
         SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
-        SetTransparency(166);
+        SetTransparency(205);
         // Use the engine pause with its built-in message suppressed.
         game.Pause();
         screen->InsertItem(this);
@@ -494,11 +494,11 @@ struct JournalLayout {
 };
 
 enum class Ink : unsigned long {
-    Paper = 0xFFF1DFC1,
-    Muted = 0xFFCCBFA9,
-    Gold = 0xFFE9BD79,
-    Done = 0xFFBCD19C,
-    Missed = 0xFFEAA291,
+    Paper = 0xFFFFFFFF,
+    Muted = 0xFFF5EEE4,
+    Gold = 0xFFFFD9A1,
+    Done = 0xFFDDF7C7,
+    Missed = 0xFFFFC7BE,
 };
 
 static void ReplaceYoForJournalFont(std::string& text) {
@@ -524,9 +524,14 @@ static std::string FitText(std::string text, int width) {
 static void Text(int x, int y, const std::string& text, int width, Ink ink = Ink::Paper) {
     const auto fitted = FitText(text, width);
     if (fitted.empty()) return;
+    const zSTRING line(fitted.c_str());
     zCOLOR color;
     color.dword = static_cast<unsigned long>(ink);
-    journal->CreateText(x, y, zSTRING(fitted.c_str()), 0.0f, color, 0, 1);
+    journal->CreateText(x, y, line, 0.0f, color, 0, 1);
+    // The engine draws the most recently added text first.
+    zCOLOR shadow;
+    shadow.dword = 0xFF050709;
+    journal->CreateText(x + journal->anx(2), y + journal->any(2), line, 0.0f, shadow, 0, 1);
 }
 
 static std::vector<std::string> WrapText(std::string text, int width) {
