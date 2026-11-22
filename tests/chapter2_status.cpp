@@ -163,7 +163,7 @@ static void TestDeparture() {
     progress.Add(Step::Missed);
     progress.Add(Step::Unknown);
     Check(!progress.Percent());
-    Check(progress.missed == 1 && progress.unknown == 1);
+    Check(progress.missed == 1 && progress.unknown == 1 && progress.deferred == 1);
     progress.Add(Step::Done);
     progress.Add(Step::Done);
     progress.Add(Step::Open);
