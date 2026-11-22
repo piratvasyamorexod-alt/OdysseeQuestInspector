@@ -9,6 +9,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 
 using namespace OQIKondehra;
@@ -217,8 +218,29 @@ static void TestDeparture() {
     Check(DepartureStep(A::Lookout, {2}, Status::Done) == Step::Done);
 }
 
+static void TestWalkthroughCoverage() {
+    const auto check = [](const auto& entries) {
+        for (const auto& quest : entries) {
+            Check(quest.walkthrough != nullptr);
+            const std::wstring_view steps = quest.walkthrough;
+            const auto split = steps.find(L'\n');
+            Check(split != std::wstring_view::npos && split > 0 && split + 1 < steps.size());
+            Check(steps.find(L"\n\n") == std::wstring_view::npos);
+        }
+    };
+    check(OQIKondehra::quests);
+    check(OQIAlbatros::quests);
+    check(OQITamora::quests);
+
+    const std::wstring_view chronicles = OQITamora::quests[OQITamora::Chronicles].walkthrough;
+    for (const auto* volume : {L"Том I.", L"Том II.", L"Том III.", L"Том IV.", L"Том V."}) {
+        Check(chronicles.find(volume) != std::wstring_view::npos);
+    }
+}
+
 int main() {
     TestTamora();
     TestAlbatros();
     TestDeparture();
+    TestWalkthroughCoverage();
 }

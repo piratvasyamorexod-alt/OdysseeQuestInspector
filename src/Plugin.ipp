@@ -7,6 +7,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -382,6 +383,7 @@ struct JournalInput {
     int pages = 0;
     int locations = 0;
     int hintLines = 0;
+    int hintPages = 0;
     bool hint = false;
     bool close = false;
 };
@@ -423,8 +425,14 @@ public:
             if (ShiftDown()) ++pending.hintLines;
             else ++pending.selection;
             return TRUE;
-        case KEY_PGUP: --pending.pages; return TRUE;
-        case KEY_PGDN: ++pending.pages; return TRUE;
+        case KEY_PGUP:
+            if (ShiftDown()) --pending.hintPages;
+            else --pending.pages;
+            return TRUE;
+        case KEY_PGDN:
+            if (ShiftDown()) ++pending.hintPages;
+            else ++pending.pages;
+            return TRUE;
         case KEY_LEFT: --pending.locations; return TRUE;
         case KEY_RIGHT: ++pending.locations; return TRUE;
         case KEY_RETURN:
@@ -524,10 +532,13 @@ static std::vector<std::string> WrapText(const std::string& text, int width) {
     return lines;
 }
 
-static std::string Russian(const wchar_t* value) {
-    char buffer[640] = {};
-    WideCharToMultiByte(1251, 0, value, -1, buffer, sizeof(buffer), nullptr, nullptr);
-    return buffer;
+static std::string Russian(std::wstring_view value) {
+    if (value.empty()) return {};
+    const int length = static_cast<int>(value.size());
+    const int bytes = WideCharToMultiByte(1251, 0, value.data(), length, nullptr, 0, nullptr, nullptr);
+    std::string text(bytes, '\0');
+    if (bytes) WideCharToMultiByte(1251, 0, value.data(), length, text.data(), bytes, nullptr, nullptr);
+    return text;
 }
 
 static const wchar_t* StatusText(Status status) {
@@ -541,60 +552,11 @@ static const wchar_t* StatusText(Status status) {
     }
 }
 
-static const wchar_t* Reason(std::size_t id, const QuestItem& item) {
-    const auto status = item.result.status;
-    if (currentVisit && item.step == Step::Deferred && status != Status::Done && status != Status::Missed) {
-        return L"Этот этап относится к другой локации или к другому моменту сюжета.";
-    }
-    if (currentVisit && item.step == Step::Done && status != Status::Done) {
-        return L"Этап текущего визита уже завершён.";
-    }
-    if (status == Status::Later) {
-        return currentVisit && item.step == Step::Open
-            ? L"Условия ещё не выполнены. Задание можно открыть в этот визит."
-            : L"Условия получения задания ещё не выполнены.";
-    }
-    switch (item.result.evidence) {
-    case Evidence::Journal: return L"Статус подтверждён журналом.";
-    case Evidence::Script: return L"Стадия подтверждена скриптом.";
-    case Evidence::StartRule: return L"Задание уже можно взять.";
-    case Evidence::ClosedRule:
-        if (SelectedLocation() != Location::Kondehra) {
-            const auto* reason = SelectedCatalog().entries[id].caution;
-            return reason ? reason : L"Условие закрытия подтверждено.";
-        }
-        switch (id) {
-        case Fortress: return L"Знакомство с Сандроком закрыло задание у моста.";
-        case Testament: return L"Началось поручение в Варанте. Завещание уже закрыто.";
-        default: return L"Вы отказались в диалоге. Предложение больше не появится.";
-        }
-    default: return L"Текущее состояние или доступность не подтверждены.";
-    }
-}
-
-static const wchar_t* WindowNotice(QuestId id) {
-    switch (id) {
-    case Fortress: return L"Сначала подойдите к мосту. Знакомство с Сандроком закроет этот старт.";
-    case Rats: return L"Отказ у Сандрока закрывает поручение.";
-    case Staff: return L"Отказ у Гигеса закрывает поручение.";
-    case Testament: return L"Поручение Болдуина в Варанте прерывает начатую цепочку.";
-    case Errand: return L"При отказе игра ставит провал. Сдать суп может быть ещё возможно.";
-    default: return nullptr;
-    }
-}
-
-static const wchar_t* Chain(QuestId id) {
-    switch (id) {
-    case Island:
-    case Wreck: return L"Алтарь Инноса > затонувший корабль > доклад Герноту";
-    case Wolf:
-    case Shrine: return L"Серый волк > подсказка Гигеса об алтаре > посох и корабль";
-    case Fleet:
-    case Provisions: return L"Флот орков > затонувший корабль > прощание с Сандроком > провиант";
-    case Library:
-    case Rats: return L"Разговор о крепости > библиотека и поручение о крысах";
-    default: return nullptr;
-    }
+static const wchar_t* ClosedNotice(std::size_t id) {
+    if (SelectedLocation() != Location::Kondehra) return SelectedCatalog().entries[id].caution;
+    if (id == Fortress) return L"Знакомство с Сандроком закрыло задание у моста.";
+    if (id == Testament) return L"Началось поручение в Варанте. Завещание уже закрыто.";
+    return L"Отказ в диалоге закрыл поручение.";
 }
 
 static constexpr int questFilterCount = 7;
@@ -664,7 +626,7 @@ static const wchar_t* QuestStatus(const QuestItem& item) {
     return StatusText(status);
 }
 
-static void PaintDetails(const JournalLayout& ui, std::size_t id, int hintMovement) {
+static void PaintDetails(const JournalLayout& ui, std::size_t id, const JournalInput& input) {
     const auto& item = questItems[id];
     const auto& quest = SelectedCatalog().entries[id];
     const int width = ui.Right() - ui.details;
@@ -685,26 +647,33 @@ static void PaintDetails(const JournalLayout& ui, std::size_t id, int hintMoveme
     if (!revealedQuest || row >= 5 + ui.rows) return;
 
     std::vector<std::string> lines;
-    const auto append = [&](const wchar_t* paragraph) {
-        if (!paragraph || !*paragraph) return;
-        auto wrapped = WrapText(Russian(paragraph), width);
+    const auto append = [&](const std::string& paragraph) {
+        auto wrapped = WrapText(paragraph, width);
         lines.insert(lines.end(), std::make_move_iterator(wrapped.begin()), std::make_move_iterator(wrapped.end()));
     };
-    const bool kondehra = SelectedLocation() == Location::Kondehra;
-    append(Reason(id, item));
-    append(quest.start);
-    append(quest.finish);
-    append(kondehra ? WindowNotice(static_cast<QuestId>(id)) : quest.caution);
-    append(kondehra ? Chain(static_cast<QuestId>(id)) : quest.chain);
+    std::wstring_view walkthrough = quest.walkthrough;
+    for (int step = 1; !walkthrough.empty(); ++step) {
+        const auto end = walkthrough.find(L'\n');
+        append(std::to_string(step) + ". " + Russian(walkthrough.substr(0, end)));
+        if (end == std::wstring_view::npos) break;
+        walkthrough.remove_prefix(end + 1);
+    }
+    if (item.result.evidence == Evidence::ClosedRule) {
+        if (const auto* notice = ClosedNotice(id)) append(Russian(notice));
+    }
     const int available = 5 + ui.rows - row;
     const int count = static_cast<int>(lines.size());
     const int capacity = count > available && available > 1 ? available - 1 : available;
-    hintOffset = std::clamp(hintOffset + hintMovement, 0, (std::max)(0, count - capacity));
-    for (int i = hintOffset; i < (std::min)(hintOffset + capacity, count); ++i) {
+    hintOffset = std::clamp(hintOffset + input.hintLines + input.hintPages * capacity,
+                            0, (std::max)(0, count - capacity));
+    const int end = (std::min)(hintOffset + capacity, count);
+    for (int i = hintOffset; i < end; ++i) {
         Text(ui.details, ui.Y(row++), lines[i], width);
     }
     if (capacity < available) {
-        Text(ui.details, ui.Y(row), Russian(L"Shift + вверх/вниз · Листать подсказку"), width, Ink::Muted);
+        const auto position = std::to_string(hintOffset + 1) + "-" + std::to_string(end)
+            + "/" + std::to_string(count);
+        Text(ui.details, ui.Y(row), "Shift+PgUp/PgDn  " + position, width, Ink::Muted);
     }
 }
 
@@ -788,7 +757,7 @@ static void PaintQuests(const JournalLayout& ui, const JournalInput& input) {
              i == selected ? Ink::Gold : Ink::Paper);
         Text(statusX, y, fittedStatus, ui.listRight - statusX, QuestInk(item));
     }
-    PaintDetails(ui, selectedId, input.hintLines);
+    PaintDetails(ui, selectedId, input);
 }
 
 static void PaintRaw(const JournalLayout& ui) {
