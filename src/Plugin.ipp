@@ -5,12 +5,14 @@
 #include <cstdio>
 #include <cstdint>
 #include <initializer_list>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "kondehra.hpp"
 #include "quest_manifest.hpp"
+#include "tamora.hpp"
 
 namespace GOTHIC_NAMESPACE {
 namespace OQI {
@@ -26,12 +28,23 @@ static int questFilter = 0;
 static int rawFilter = 0;
 static int page = 0;
 static int selected = 0;
+enum class IslandView { Kondehra, Tamora };
+static IslandView islandView = IslandView::Kondehra;
+static std::optional<std::size_t> revealedQuest;
 static std::chrono::steady_clock::time_point nextRefresh;
 
 struct RawItem { std::string name; int value; };
 struct QuestItem { std::string title; Result result; };
 static std::vector<RawItem> rawItems;
-static std::array<QuestItem, QuestCount> questItems;
+static std::vector<QuestItem> questItems;
+
+static const Quest& CatalogQuest(std::size_t index) {
+    return islandView == IslandView::Tamora ? OQITamora::quests[index] : quests[index];
+}
+
+static std::size_t CatalogSize() {
+    return islandView == IslandView::Tamora ? OQITamora::quests.size() : quests.size();
+}
 
 static zCPar_Symbol* Scalar(const char* name, unsigned int type) {
     auto* symbol = parser->GetSymbol(name);
@@ -69,7 +82,11 @@ static bool IsVerifiedScriptBuild() {
         {"DIA_GYGES_ZEIGEHIRTENSTAB_NEIN", 5892037, 77, 0xe5496f40},
         {"DIA_GRISELDA_WILLDRAUSENESSEN_ICHPALADIN", 5902239, 273, 0xe8147eae},
         {"USEKOROFSKISTAGEBUCH", 1222490, 581, 0x4eb12588},
-        {"TSZUGBRUECKEGESEHEN", 9847219, 123, 0x13380a36}
+        {"TSZUGBRUECKEGESEHEN", 9847219, 123, 0x13380a36},
+        {"DIA_GERNOT_TAMORA_CONDITION", 8983820, 63, 0xe6e34f2c},
+        {"DIA_PAL_3_BRUNO_MINEN_CONDITION", 8870316, 39, 0x08114451},
+        {"DIA_GERNOT_ADARMOS_INFO", 8985128, 283, 0xc7d81b52},
+        {"VERLASSENESHAUS_FUNC", 9857931, 100, 0xa8a435f1}
     };
     const auto& code = parser->stack;
     for (const auto& function : functions) {
@@ -128,6 +145,11 @@ static oCNpc* FindLivingNpc(const char* name) {
 
 static bool OnKondehra() {
     return Value("CURRENTLEVEL") == 57; // KONDEHRA_ZEN in the verified script build.
+}
+
+static bool OnTamora() {
+    const auto tamora = Value("TAMORA_ZEN");
+    return tamora && Value("CURRENTLEVEL") == tamora;
 }
 
 static bool HasUnpackedItem(const char* name) {
@@ -258,24 +280,36 @@ static bool ClosedRule(QuestId quest, std::optional<int> flag) {
     }
 }
 
+// Tamora-specific start and closing conditions are defined beside the catalog.
+#include "tamora_rules.hpp"
+
 static void RefreshQuests() {
     nextRefresh = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     verifiedBuild = IsVerifiedScriptBuild();
     if (!verifiedBuild) return;
-    for (std::size_t i = 0; i < quests.size(); ++i) {
-        const auto id = static_cast<QuestId>(i);
-        const auto& quest = quests[i];
+
+    questItems.resize(CatalogSize());
+    for (std::size_t i = 0; i < questItems.size(); ++i) {
+        const auto& quest = CatalogQuest(i);
         auto& item = questItems[i];
         item.title = TopicTitle(quest.topic);
         Facts facts;
         facts.flag = Value(quest.flag);
         facts.journal = ReadJournal(item.title);
-        facts.windowClosed = ClosedRule(id, facts.flag);
-        facts.staffAccepted = id == Staff && Value("HIRTENSTABRUN") == 1;
-        if (facts.flag == 0 || (id == Staff && !facts.staffAccepted && facts.flag == 1)) {
-            facts.start = StartRule(id);
+        if (islandView == IslandView::Tamora) {
+            const auto id = static_cast<OQITamora::QuestId>(i);
+            facts.windowClosed = TamoraClosedRule(id, facts);
+            if (facts.flag == 0) facts.start = TamoraStartRule(id);
+            item.result = Evaluate(facts);
+        } else {
+            const auto id = static_cast<QuestId>(i);
+            facts.windowClosed = ClosedRule(id, facts.flag);
+            facts.staffAccepted = id == Staff && Value("HIRTENSTABRUN") == 1;
+            if (facts.flag == 0 || (id == Staff && !facts.staffAccepted && facts.flag == 1)) {
+                facts.start = StartRule(id);
+            }
+            item.result = Evaluate(id, facts);
         }
-        item.result = Evaluate(id, facts);
     }
 }
 
@@ -288,8 +322,50 @@ static void RefreshRaw() {
     }
 }
 
-static void Text(int row, const char* text) {
-    screen->Print(260, 300 + row * 310, zSTRING(text));
+static constexpr int leftX = 260;
+static constexpr int hintX = 4510;
+static constexpr int rightEdge = 7950;
+static constexpr int topY = 300;
+
+static int RowHeight() {
+    auto* font = screen->GetFont();
+    return font ? (std::max)(310, screen->any(font->GetFontY()) + 30) : 310;
+}
+
+static int TextWidth(const std::string& text) {
+    auto* font = screen->GetFont();
+    return font ? screen->anx(font->GetFontX(zSTRING(text.c_str()))) : 0;
+}
+
+static void Text(int row, const char* text, int x = leftX) {
+    screen->Print(x, topY + row * RowHeight(), zSTRING(text));
+}
+
+static std::string FitText(std::string text, int width) {
+    if (TextWidth(text) <= width) return text;
+    while (!text.empty() && TextWidth(text + "...") > width) text.pop_back();
+    return text + "...";
+}
+
+static int WrappedText(int row, const std::string& text) {
+    const int width = rightEdge - hintX;
+    const int rowLimit = (7600 - topY) / RowHeight();
+    std::string line;
+    for (std::size_t start = 0; start < text.size() && row <= rowLimit;) {
+        auto end = text.find(' ', start);
+        if (end == std::string::npos) end = text.size();
+        const auto word = text.substr(start, end - start);
+        const auto candidate = line.empty() ? word : line + ' ' + word;
+        if (!line.empty() && TextWidth(candidate) > width) {
+            Text(row++, FitText(line, width).c_str(), hintX);
+            line = word;
+        } else {
+            line = candidate;
+        }
+        start = end + 1;
+    }
+    if (!line.empty() && row <= rowLimit) Text(row++, FitText(line, width).c_str(), hintX);
+    return row;
 }
 
 static std::string Russian(const wchar_t* value) {
@@ -313,12 +389,16 @@ static const wchar_t* StatusText(Status status) {
     }
 }
 
-static const wchar_t* Reason(QuestId id, Evidence evidence) {
+static const wchar_t* Reason(std::size_t id, Evidence evidence) {
     switch (evidence) {
     case Evidence::Journal: return L"Статус подтверждён журналом.";
     case Evidence::Script: return L"Стадия подтверждена скриптом.";
     case Evidence::StartRule: return L"Проверены условия начала.";
     case Evidence::ClosedRule:
+        if (islandView == IslandView::Tamora) {
+            const auto* reason = CatalogQuest(id).caution;
+            return reason ? reason : L"Условие закрытия подтверждено.";
+        }
         switch (id) {
         case Fortress: return L"Знакомство с Сандроком закрыло задание у моста.";
         case Testament: return L"Началось поручение в Варанте. Завещание уже закрыто.";
@@ -357,9 +437,13 @@ static constexpr int questFilterCount = 7;
 static constexpr int rawFilterCount = 5;
 static constexpr int rawPageSize = 13;
 
-static void PaintQuests(int movement) {
-    Text(0, beforeDeparture ? L"Кондера · Глава 2 · Перед отплытием" : L"Кондера · Глава 2 · Задания");
-    Text(1, "Shift+F: FILTER | Shift+V: DEPARTURE | Shift+D: FLAGS | PgUp/PgDn: SELECT | R");
+static void PaintQuests(int movement, bool toggleHints) {
+    const bool tamora = islandView == IslandView::Tamora;
+    const auto heading = Russian(tamora ? L"Тамора · Глава 2 · " : L"Кондера · Глава 2 · ")
+        + Russian(beforeDeparture ? L"Перед отплытием" : L"Задания");
+    Text(0, heading.c_str());
+    Text(1, "Shift+F: FILTER | Shift+V: DEPARTURE | Shift+D: FLAGS | R");
+    Text(2, L"PgUp/PgDn: выбор | Shift+H: подсказка (спойлер) | Shift+T: остров");
     if (!verifiedBuild) {
         Text(3, L"Скрипты русской версии 2.7.5.2 не распознаны.");
         Text(4, L"Доступен просмотр значений по Shift+D.");
@@ -367,45 +451,73 @@ static void PaintQuests(int movement) {
     }
 
     const auto chapter = Value("KAPITEL");
-    if (chapter != 2 || !OnKondehra()) {
-        Text(2, L"Список относится к Кондере во второй главе. Сейчас вы вне этой локации или главы.");
+    if (chapter != 2 || !(tamora ? OnTamora() : OnKondehra())) {
+        Text(3, L"Вы сейчас вне выбранной локации или главы.");
     } else if (beforeDeparture) {
-        Text(2, L"Проверьте оставшиеся дела. Звёздочкой отмечены задания с продолжением вне острова.");
+        Text(3, L"Проверьте оставшиеся дела. Звёздочкой отмечены задания с продолжением вне острова.");
     }
 
-    std::vector<QuestId> visible;
+    std::vector<std::size_t> visible;
     for (std::size_t i = 0; i < questItems.size(); ++i) {
         const auto status = questItems[i].result.status;
         if (beforeDeparture && !IncludeBeforeDeparture(status)) continue;
         if (questFilter != 0 && static_cast<int>(status) + 1 != questFilter) continue;
-        visible.push_back(static_cast<QuestId>(i));
+        visible.push_back(i);
     }
 
     const wchar_t* filter = questFilter ? StatusText(static_cast<Status>(questFilter - 1)) : L"Все";
-    Text(3, (Russian(L"Фильтр: ") + Russian(filter)).c_str());
+    Text(4, (Russian(L"Фильтр: ") + Russian(filter)).c_str());
     if (visible.empty()) {
+        revealedQuest.reset();
         Text(5, L"Для этого фильтра заданий нет.");
         return;
     }
+    const auto oldSelection = selected;
     selected = std::clamp(selected + movement, 0, static_cast<int>(visible.size()) - 1);
+    const auto selectedId = visible[selected];
+    if (oldSelection != selected || revealedQuest != selectedId) revealedQuest.reset();
+    if (toggleHints) {
+        if (revealedQuest) revealedQuest.reset();
+        else revealedQuest = selectedId;
+    }
+    const bool showHints = revealedQuest.has_value();
 
-    for (std::size_t i = 0; i < visible.size(); ++i) {
+    const int rows = std::clamp((7150 - topY) / RowHeight() - 5, 1, 15);
+    const int first = (selected / rows) * rows;
+    const int end = (std::min)(first + rows, static_cast<int>(visible.size()));
+    const auto indicator = std::to_string(first + 1) + "-" + std::to_string(end)
+        + " / " + std::to_string(visible.size());
+    Text(4, indicator.c_str(), 3600);
+    for (int i = first; i < end; ++i) {
         const auto id = visible[i];
         const auto& item = questItems[id];
-        std::string line = i == static_cast<std::size_t>(selected) ? "> " : "  ";
-        line += item.title.empty() ? Russian(L"Название отсутствует") : item.title;
-        if (quests[id].continuesBeyondIsland) line += " *";
-        line += " | " + Russian(StatusText(item.result.status));
-        Text(4 + static_cast<int>(i), line.c_str());
+        std::string title = i == selected ? "> " : "  ";
+        title += item.title.empty() ? Russian(L"Название отсутствует") : item.title;
+        if (CatalogQuest(id).continuesBeyondIsland) title += " *";
+        const auto status = Russian(StatusText(item.result.status));
+        const int row = 5 + i - first;
+        if (showHints) {
+            const auto fittedStatus = FitText(status, (hintX - leftX) / 2);
+            const int statusX = hintX - 140 - TextWidth(fittedStatus);
+            Text(row, FitText(title, statusX - leftX - 120).c_str());
+            Text(row, fittedStatus.c_str(), statusX);
+        } else {
+            Text(row, FitText(title + " | " + status, rightEdge - leftX).c_str());
+        }
     }
-    const auto id = visible[selected];
-    const int details = 5 + static_cast<int>(visible.size());
-    Text(details, Reason(id, questItems[id].result.evidence));
-    Text(details + 1, quests[id].start);
-    Text(details + 2, quests[id].finish);
-    const wchar_t* extra = beforeDeparture ? WindowNotice(id) : nullptr;
-    if (!extra) extra = Chain(id);
-    if (extra) Text(details + 3, extra);
+    if (!showHints) return;
+
+    const auto& item = questItems[selectedId];
+    const auto& quest = CatalogQuest(selectedId);
+    int row = WrappedText(4, item.title.empty() ? Russian(L"Подсказка") : item.title);
+    row = WrappedText(row + 1, Russian(Reason(selectedId, item.result.evidence)));
+    row = WrappedText(row + 1, Russian(quest.start));
+    row = WrappedText(row + 1, Russian(quest.finish));
+    const auto id = static_cast<QuestId>(selectedId);
+    const wchar_t* notice = tamora ? quest.caution : WindowNotice(id);
+    const wchar_t* chain = tamora ? quest.chain : Chain(id);
+    if (notice) row = WrappedText(row + 1, Russian(notice));
+    if (chain) WrappedText(row + 1, Russian(chain));
 }
 
 static void PaintRaw() {
@@ -447,7 +559,7 @@ struct Key {
 };
 
 static Key filterKey{KEY_F}, departureKey{KEY_V}, diagnosticKey{KEY_D};
-static Key previousKey{KEY_PGUP}, nextKey{KEY_PGDN};
+static Key previousKey{KEY_PGUP}, nextKey{KEY_PGDN}, hintKey{KEY_H}, islandKey{KEY_T};
 
 static void Loop() {
     if (loading || !zinput || !player || !screen || !parser || !ogame || !ogame->GetGameWorld()) return;
@@ -456,11 +568,15 @@ static void Loop() {
     const bool filterPressed = filterKey.Pressed() && shift;
     const bool departurePressed = departureKey.Pressed() && shift;
     const bool diagnosticPressed = diagnosticKey.Pressed() && shift;
+    const bool hintPressed = hintKey.Pressed() && shift;
+    const bool islandPressed = islandKey.Pressed() && shift;
     const int movement = static_cast<int>(nextKey.Pressed()) - static_cast<int>(previousKey.Pressed());
 
     if (zinput->KeyToggled(KEY_APOSTROPHE)) {
         opened = !opened;
+        revealedQuest.reset();
         if (opened) {
+            if (OnTamora() && islandView != IslandView::Tamora && questItems.empty()) islandView = IslandView::Tamora;
             if (diagnostics) RefreshRaw();
             else RefreshQuests();
         }
@@ -468,6 +584,7 @@ static void Loop() {
     if (!opened) return;
     if (diagnosticPressed) {
         diagnostics = !diagnostics;
+        revealedQuest.reset();
         if (diagnostics) RefreshRaw();
         else RefreshQuests();
     }
@@ -480,10 +597,16 @@ static void Loop() {
         PaintRaw();
         return;
     }
-    if (departurePressed) { beforeDeparture = !beforeDeparture; questFilter = 0; selected = 0; }
-    if (filterPressed) { questFilter = (questFilter + 1) % questFilterCount; selected = 0; }
+    if (islandPressed) {
+        islandView = islandView == IslandView::Tamora ? IslandView::Kondehra : IslandView::Tamora;
+        questFilter = selected = 0;
+        revealedQuest.reset();
+        RefreshQuests();
+    }
+    if (departurePressed) { beforeDeparture = !beforeDeparture; questFilter = 0; selected = 0; revealedQuest.reset(); }
+    if (filterPressed) { questFilter = (questFilter + 1) % questFilterCount; selected = 0; revealedQuest.reset(); }
     if (refreshPressed || std::chrono::steady_clock::now() >= nextRefresh) RefreshQuests();
-    PaintQuests(movement);
+    PaintQuests(movement, hintPressed && !islandPressed);
 }
 
 class LoadScope {
@@ -495,9 +618,11 @@ public:
         verifiedBuild = false;
         beforeDeparture = false;
         diagnostics = false;
+        revealedQuest.reset();
         questFilter = rawFilter = page = selected = 0;
         rawItems.clear();
-        questItems = {};
+        questItems.clear();
+        islandView = IslandView::Kondehra;
     }
     ~LoadScope() { loading = wasLoading; }
 };
