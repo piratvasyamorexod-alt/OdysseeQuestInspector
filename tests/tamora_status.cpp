@@ -42,7 +42,7 @@ static Start WithNpc(Start ready, const char* name) {
     return FindLivingNpc(name) ? Start::Yes : Start::Unknown;
 }
 
-#include "../src/tamora_rules.ipp"
+#include "../src/tamora_rules.hpp"
 
 static void Check(bool condition) {
     if (!condition) std::abort();

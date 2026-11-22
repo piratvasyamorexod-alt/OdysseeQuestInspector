@@ -281,7 +281,7 @@ static bool ClosedRule(QuestId quest, std::optional<int> flag) {
 }
 
 // Tamora-specific start and closing conditions are defined beside the catalog.
-#include "tamora_rules.ipp"
+#include "tamora_rules.hpp"
 
 static void RefreshQuests() {
     nextRefresh = std::chrono::steady_clock::now() + std::chrono::seconds(1);
