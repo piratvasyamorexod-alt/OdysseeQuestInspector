@@ -445,11 +445,23 @@ static const wchar_t* StatusText(Status status) {
     }
 }
 
-static const wchar_t* Reason(std::size_t id, Evidence evidence) {
-    switch (evidence) {
+static const wchar_t* Reason(std::size_t id, const QuestItem& item) {
+    const auto status = item.result.status;
+    if (currentVisit && item.step == Step::Deferred && status != Status::Done && status != Status::Missed) {
+        return L"Этот этап относится к другой локации или к другому моменту сюжета.";
+    }
+    if (currentVisit && item.step == Step::Done && status != Status::Done) {
+        return L"Этап текущего визита уже завершён.";
+    }
+    if (status == Status::Later) {
+        return currentVisit && item.step == Step::Open
+            ? L"Условия ещё не выполнены. Задание можно открыть в этот визит."
+            : L"Условия получения задания ещё не выполнены.";
+    }
+    switch (item.result.evidence) {
     case Evidence::Journal: return L"Статус подтверждён журналом.";
     case Evidence::Script: return L"Стадия подтверждена скриптом.";
-    case Evidence::StartRule: return L"Проверены условия начала.";
+    case Evidence::StartRule: return L"Задание уже можно взять.";
     case Evidence::ClosedRule:
         if (SelectedLocation() != Location::Kondehra) {
             const auto* reason = SelectedCatalog().entries[id].caution;
@@ -499,7 +511,7 @@ static const wchar_t* DepartureLabel(Step step) {
     case Step::Missed: return L"Пропущено";
     case Step::Unknown: return L"Нужно проверить";
     case Step::Done: return L"Этап завершён";
-    default: return L"Позже";
+    default: return L"Другой этап";
     }
 }
 
@@ -514,8 +526,9 @@ static void PaintProgress() {
     } else {
         line = Russian(L"Нет данных для процента");
     }
+    line += Russian(L" | Другой этап: ") + std::to_string(progress.deferred);
     line += Russian(L" | Пропущено: ") + std::to_string(progress.missed);
-    line += Russian(L" | Неясно: ") + std::to_string(progress.unknown);
+    line += Russian(L" | Неясно здесь: ") + std::to_string(progress.unknown);
     Text(3, FitText(line, rightEdge - leftX).c_str());
 }
 
@@ -583,9 +596,21 @@ static void PaintQuests(int movement, bool toggleHints) {
         const auto id = visible[i];
         const auto& item = questItems[id];
         std::string title = i == selected ? "> " : "  ";
+        const auto globalStatus = item.result.status;
+        if (currentVisit && !beforeDeparture) {
+            if (item.step == Step::Deferred && globalStatus != Status::Done && globalStatus != Status::Missed) {
+                title += Russian(L"Другой этап · ");
+            } else if (item.step == Step::Open && globalStatus == Status::Later) {
+                title += Russian(L"Откроется здесь · ");
+            } else if (item.step == Step::Open && globalStatus == Status::Unknown) {
+                title += Russian(L"Местный этап · ");
+            } else if (item.step == Step::Done && globalStatus != Status::Done) {
+                title += Russian(L"Этап завершён · ");
+            }
+        }
         title += item.title.empty() ? Russian(L"Название отсутствует") : item.title;
         if (catalog.entries[id].continuesBeyondIsland) title += " *";
-        const auto status = Russian(beforeDeparture ? DepartureLabel(item.step) : StatusText(item.result.status));
+        const auto status = Russian(beforeDeparture ? DepartureLabel(item.step) : StatusText(globalStatus));
         const int row = 5 + i - first;
         if (showHints) {
             const auto fittedStatus = FitText(status, (hintX - leftX) / 2);
@@ -601,7 +626,7 @@ static void PaintQuests(int movement, bool toggleHints) {
     const auto& item = questItems[selectedId];
     const auto& quest = catalog.entries[selectedId];
     int row = WrappedText(4, item.title.empty() ? Russian(L"Подсказка") : item.title);
-    row = WrappedText(row + 1, Russian(Reason(selectedId, item.result.evidence)));
+    row = WrappedText(row + 1, Russian(Reason(selectedId, item)));
     row = WrappedText(row + 1, Russian(quest.start));
     row = WrappedText(row + 1, Russian(quest.finish));
     const wchar_t* notice = kondehra ? WindowNotice(static_cast<QuestId>(selectedId)) : quest.caution;

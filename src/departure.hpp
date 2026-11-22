@@ -28,6 +28,7 @@ struct Progress {
     int completed = 0;
     int remaining = 0;
     int missed = 0;
+    int deferred = 0;
     int unknown = 0;
 
     void Add(Step step) {
@@ -36,7 +37,7 @@ struct Progress {
         case Step::Open: ++remaining; break;
         case Step::Missed: ++missed; break;
         case Step::Unknown: ++unknown; break;
-        case Step::Deferred: break;
+        case Step::Deferred: ++deferred; break;
         }
     }
 
