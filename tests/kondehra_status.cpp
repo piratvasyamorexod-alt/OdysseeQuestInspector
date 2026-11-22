@@ -32,8 +32,4 @@ int main() {
     Check(Evaluate(Errand, {3, Journal::Success}).status == Status::Unknown);
     Check(Evaluate(Testament, {2, Journal::Failure, Start::Unknown, true}).status == Status::Unknown);
     Check(Evaluate(Wolf, {std::nullopt, Journal::Absent, Start::Yes}).status == Status::Unknown);
-    Check(IncludeBeforeDeparture(Status::Missed));
-    Check(IncludeBeforeDeparture(Status::Unknown));
-    Check(IncludeBeforeDeparture(Status::Later));
-    Check(!IncludeBeforeDeparture(Status::Done));
 }

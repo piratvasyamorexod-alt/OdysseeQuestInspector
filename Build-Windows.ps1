@@ -21,7 +21,7 @@ git -C $template checkout --detach $templateCommit
 Check "Failed to select pinned Union template"
 git -C $template submodule update --init --recursive
 Check "Failed to fetch Union dependencies"
-$sources = @("Plugin.ipp", "quest_manifest.hpp", "kondehra.hpp", "tamora.hpp", "tamora_rules.hpp", "albatros.hpp", "albatros_rules.hpp")
+$sources = @("Plugin.ipp", "quest_manifest.hpp", "kondehra.hpp", "tamora.hpp", "tamora_rules.hpp", "albatros.hpp", "albatros_rules.hpp", "departure.hpp", "departure_rules.hpp")
 foreach ($source in $sources) {
   Copy-Item (Join-Path $root "src/$source") (Join-Path $template "src/$source") -Force
 }
