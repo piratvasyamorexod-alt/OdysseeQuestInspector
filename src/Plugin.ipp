@@ -47,7 +47,7 @@ static void Paint() {
         else ++other;
         if (Matches(item.state)) filtered.push_back(&item);
     }
-    int pages = std::max(1, int((filtered.size() + pageSize - 1) / pageSize));
+    int pages = (std::max)(1, int((filtered.size() + pageSize - 1) / pageSize));
     page = std::clamp(page, 0, pages - 1);
     char buffer[256];
     std::snprintf(buffer, sizeof(buffer), "ODYSSEE QUEST INSPECTOR | %s | %d/%d", filterNames[filter], page + 1, pages);
@@ -57,7 +57,7 @@ static void Paint() {
     Text(1, buffer);
     Text(2, "APOSTROPHE: CLOSE | F6: FILTER | LEFT/RIGHT: PAGE | R: REFRESH");
     Text(3, "RAW SCRIPT FLAGS -- NOT JOURNAL QUEST COUNTS");
-    int begin = page * pageSize, end = std::min(begin + pageSize, int(filtered.size()));
+    int begin = page * pageSize, end = (std::min)(begin + pageSize, int(filtered.size()));
     for (int i = begin; i < end; ++i) {
         std::snprintf(buffer, sizeof(buffer), "[%d] %s", filtered[i]->state, filtered[i]->name.c_str());
         Text(i - begin + 4, buffer);
@@ -76,7 +76,7 @@ static void Loop() {
     if (!opened) return;
     if (zinput->KeyToggled(KEY_F6)) { filter = (filter + 1) % 5; page = 0; }
     if (zinput->KeyToggled(KEY_R)) Refresh();
-    if (zinput->KeyToggled(KEY_LEFT)) page = std::max(0, page - 1);
+    if (zinput->KeyToggled(KEY_LEFT)) page = (std::max)(0, page - 1);
     if (zinput->KeyToggled(KEY_RIGHT)) ++page;
     Paint();
 }
