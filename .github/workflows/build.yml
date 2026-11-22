@@ -4,10 +4,22 @@ on:
   push:
     paths:
       - 'src/**'
+      - 'tests/**'
       - 'Build-Windows.ps1'
       - '.github/workflows/build.yml'
 jobs:
+  quest-status-tests:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test quest status evaluation
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror tests/kondehra_status.cpp -o kondehra_status
+          ./kondehra_status
   build:
+    needs: quest-status-tests
     runs-on: windows-2022
     permissions:
       contents: read
