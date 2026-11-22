@@ -18,8 +18,8 @@ jobs:
         run: |
           c++ -std=c++17 -Wall -Wextra -Werror tests/kondehra_status.cpp -o kondehra_status
           ./kondehra_status
-          c++ -std=c++17 -Wall -Wextra -Werror tests/tamora_status.cpp -o tamora_status
-          ./tamora_status
+          c++ -std=c++17 -Wall -Wextra -Werror tests/chapter2_status.cpp -o chapter2_status
+          ./chapter2_status
   build:
     needs: quest-status-tests
     runs-on: windows-2022

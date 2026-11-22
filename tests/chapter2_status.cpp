@@ -1,3 +1,4 @@
+#include "../src/albatros.hpp"
 #include "../src/tamora.hpp"
 
 #include <cstdlib>
@@ -23,6 +24,7 @@ static std::optional<int> Read(const std::map<std::string, int>& values, const c
 
 static std::optional<int> Value(const char* name) { return Read(flags, name); }
 static std::optional<int> Told(const char* name) { return Read(dialogs, name); }
+static bool OnAlbatros() { return Value("CURRENTLEVEL") == 16 || Value("CURRENTLEVEL") == 29; }
 static bool OnTamora() { return Value("CURRENTLEVEL") == 14; }
 static bool HasUnpackedItem(const char* name) { return items.count(name) != 0; }
 static bool FindLivingNpc(const char* name) { return actors.count(name) != 0; }
@@ -43,6 +45,7 @@ static Start WithNpc(Start ready, const char* name) {
 }
 
 #include "../src/tamora_rules.hpp"
+#include "../src/albatros_rules.hpp"
 
 static void Check(bool condition) {
     if (!condition) std::abort();
@@ -54,7 +57,7 @@ static Result Inspect(OQITamora::QuestId id, Facts facts) {
     return Evaluate(facts);
 }
 
-int main() {
+static void TestTamora() {
     namespace T = OQITamora;
     Check(T::quests.size() == 40);
 
@@ -92,4 +95,55 @@ int main() {
     flags["CURRENTLEVEL"] = 16;
     Check(Inspect(T::Honey, {0}).status == Status::Later);
     Check(Inspect(T::Honey, {1}).status == Status::Running);
+}
+
+static Result Inspect(OQIAlbatros::QuestId id, Facts facts) {
+    facts.windowClosed = AlbatrosClosedRule(id, facts);
+    if (facts.flag == 0) facts.start = AlbatrosStartRule(id);
+    return Evaluate(facts);
+}
+
+static void TestAlbatros() {
+    namespace A = OQIAlbatros;
+    flags = {{"KAPITEL", 2}, {"CURRENTLEVEL", 29}};
+    dialogs.clear();
+    actors.clear();
+    items.clear();
+
+    Check(A::quests.size() == 24);
+    Check(Inspect(A::Boatswain, {0}).status == Status::Unknown);
+    actors.insert("MIL_9000_HARALD");
+    dialogs["DIA_HARALD_JOBBOOTSMANN"] = 0;
+    dialogs["DIA_HARALD_HALLO"] = 0;
+    dialogs["DIA_HARALD_BOOTSMANN"] = 0;
+    Check(Inspect(A::Boatswain, {0}).status == Status::Later);
+    dialogs["DIA_HARALD_HALLO"] = 1;
+    Check(Inspect(A::Boatswain, {0}).status == Status::Available);
+    Check(Inspect(A::Boatswain, {1}).status == Status::Running);
+    Check(Inspect(A::Boatswain, {2}).status == Status::Done);
+
+    Check(Inspect(A::Bully, {0, Journal::Running}).status == Status::Running);
+    Check(Inspect(A::Bully, {3}).status == Status::Unknown);
+    dialogs["DIA_KNUT_DUELL"] = 1;
+    dialogs["DIA_KNUT_AFTERFIGHT"] = 1;
+    Check(Inspect(A::Bully, {3}).status == Status::Missed);
+
+    actors.insert("PAL_99002_GERNOT");
+    dialogs["DIA_GERNOT_AUSGUCK"] = 0;
+    flags["MIS_KHORUSPROVIANT"] = 1;
+    Check(Inspect(A::Lookout, {0}).status == Status::Later);
+    flags["MIS_KHORUSPROVIANT"] = 2;
+    Check(Inspect(A::Lookout, {0}).status == Status::Available);
+    flags["CURRENTLEVEL"] = 57;
+    Check(Inspect(A::Lookout, {0}).status == Status::Later);
+    Check(Inspect(A::Lookout, {2}).status == Status::Done);
+
+    items.insert("ITWR_SEAMAP_RAUHBEINSSCHATZKARTE");
+    flags["JONESSCHATZKARTEGEFUNDEN"] = 0;
+    Check(Inspect(A::PirateGold, {0}).status == Status::Available);
+}
+
+int main() {
+    TestTamora();
+    TestAlbatros();
 }

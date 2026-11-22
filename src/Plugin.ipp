@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "albatros.hpp"
 #include "kondehra.hpp"
 #include "quest_manifest.hpp"
 #include "tamora.hpp"
@@ -28,8 +29,8 @@ static int questFilter = 0;
 static int rawFilter = 0;
 static int page = 0;
 static int selected = 0;
-enum class IslandView { Kondehra, Tamora };
-static IslandView islandView = IslandView::Kondehra;
+enum class Location : std::size_t { Albatros, Kondehra, Tamora };
+static std::optional<Location> location;
 static std::optional<std::size_t> revealedQuest;
 static std::chrono::steady_clock::time_point nextRefresh;
 
@@ -38,12 +39,24 @@ struct QuestItem { std::string title; Result result; };
 static std::vector<RawItem> rawItems;
 static std::vector<QuestItem> questItems;
 
-static const Quest& CatalogQuest(std::size_t index) {
-    return islandView == IslandView::Tamora ? OQITamora::quests[index] : quests[index];
+struct Catalog {
+    const wchar_t* name;
+    const Quest* entries;
+    std::size_t size;
+};
+
+static constexpr Catalog catalogs[] = {
+    {L"Альбатрос", OQIAlbatros::quests.data(), OQIAlbatros::quests.size()},
+    {L"Кондера", quests.data(), quests.size()},
+    {L"Тамора", OQITamora::quests.data(), OQITamora::quests.size()},
+};
+
+static Location SelectedLocation() {
+    return location.value_or(Location::Kondehra);
 }
 
-static std::size_t CatalogSize() {
-    return islandView == IslandView::Tamora ? OQITamora::quests.size() : quests.size();
+static const Catalog& SelectedCatalog() {
+    return catalogs[static_cast<std::size_t>(SelectedLocation())];
 }
 
 static zCPar_Symbol* Scalar(const char* name, unsigned int type) {
@@ -86,7 +99,10 @@ static bool IsVerifiedScriptBuild() {
         {"DIA_GERNOT_TAMORA_CONDITION", 8983820, 63, 0xe6e34f2c},
         {"DIA_PAL_3_BRUNO_MINEN_CONDITION", 8870316, 39, 0x08114451},
         {"DIA_GERNOT_ADARMOS_INFO", 8985128, 283, 0xc7d81b52},
-        {"VERLASSENESHAUS_FUNC", 9857931, 100, 0xa8a435f1}
+        {"VERLASSENESHAUS_FUNC", 9857931, 100, 0xa8a435f1},
+        {"DIA_HARALD_JOBBOOTSMANN_CONDITION", 7769836, 27, 0xb2fbe492},
+        {"DIA_GERNOT_AUSGUCK_CONDITION", 8979705, 23, 0x19abca6a},
+        {"DIA_KNUT_AFTERFIGHT_INFO", 7863592, 375, 0xf6075ba9}
     };
     const auto& code = parser->stack;
     for (const auto& function : functions) {
@@ -150,6 +166,20 @@ static bool OnKondehra() {
 static bool OnTamora() {
     const auto tamora = Value("TAMORA_ZEN");
     return tamora && Value("CURRENTLEVEL") == tamora;
+}
+
+static bool OnAlbatros() {
+    const auto level = Value("CURRENTLEVEL");
+    if (!level) return false;
+    return level == Value("SEAWORLD_ZEN") || level == Value("SEAWORLD2_ZEN")
+        || level == Value("SEAWORLD3_ZEN") || level == Value("SEAWORLDFIGHT_ZEN");
+}
+
+static std::optional<Location> CurrentLocation() {
+    if (OnKondehra()) return Location::Kondehra;
+    if (OnTamora()) return Location::Tamora;
+    if (OnAlbatros()) return Location::Albatros;
+    return std::nullopt;
 }
 
 static bool HasUnpackedItem(const char* name) {
@@ -282,21 +312,28 @@ static bool ClosedRule(QuestId quest, std::optional<int> flag) {
 
 // Tamora-specific start and closing conditions are defined beside the catalog.
 #include "tamora_rules.hpp"
+#include "albatros_rules.hpp"
 
 static void RefreshQuests() {
     nextRefresh = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     verifiedBuild = IsVerifiedScriptBuild();
     if (!verifiedBuild) return;
 
-    questItems.resize(CatalogSize());
+    const auto& catalog = SelectedCatalog();
+    questItems.resize(catalog.size);
     for (std::size_t i = 0; i < questItems.size(); ++i) {
-        const auto& quest = CatalogQuest(i);
+        const auto& quest = catalog.entries[i];
         auto& item = questItems[i];
         item.title = TopicTitle(quest.topic);
         Facts facts;
         facts.flag = Value(quest.flag);
         facts.journal = ReadJournal(item.title);
-        if (islandView == IslandView::Tamora) {
+        if (SelectedLocation() == Location::Albatros) {
+            const auto id = static_cast<OQIAlbatros::QuestId>(i);
+            facts.windowClosed = AlbatrosClosedRule(id, facts);
+            if (facts.flag == 0) facts.start = AlbatrosStartRule(id);
+            item.result = Evaluate(facts);
+        } else if (SelectedLocation() == Location::Tamora) {
             const auto id = static_cast<OQITamora::QuestId>(i);
             facts.windowClosed = TamoraClosedRule(id, facts);
             if (facts.flag == 0) facts.start = TamoraStartRule(id);
@@ -395,8 +432,8 @@ static const wchar_t* Reason(std::size_t id, Evidence evidence) {
     case Evidence::Script: return L"Стадия подтверждена скриптом.";
     case Evidence::StartRule: return L"Проверены условия начала.";
     case Evidence::ClosedRule:
-        if (islandView == IslandView::Tamora) {
-            const auto* reason = CatalogQuest(id).caution;
+        if (SelectedLocation() != Location::Kondehra) {
+            const auto* reason = SelectedCatalog().entries[id].caution;
             return reason ? reason : L"Условие закрытия подтверждено.";
         }
         switch (id) {
@@ -438,12 +475,13 @@ static constexpr int rawFilterCount = 5;
 static constexpr int rawPageSize = 13;
 
 static void PaintQuests(int movement, bool toggleHints) {
-    const bool tamora = islandView == IslandView::Tamora;
-    const auto heading = Russian(tamora ? L"Тамора · Глава 2 · " : L"Кондера · Глава 2 · ")
+    const auto& catalog = SelectedCatalog();
+    const bool kondehra = SelectedLocation() == Location::Kondehra;
+    const auto heading = Russian(catalog.name) + Russian(L" · Глава 2 · ")
         + Russian(beforeDeparture ? L"Перед отплытием" : L"Задания");
     Text(0, heading.c_str());
     Text(1, "Shift+F: FILTER | Shift+V: DEPARTURE | Shift+D: FLAGS | R");
-    Text(2, L"PgUp/PgDn: выбор | Shift+H: подсказка (спойлер) | Shift+T: остров");
+    Text(2, L"PgUp/PgDn: выбор | Shift+H: подсказка (спойлер) | Shift+T: локация");
     if (!verifiedBuild) {
         Text(3, L"Скрипты русской версии 2.7.5.2 не распознаны.");
         Text(4, L"Доступен просмотр значений по Shift+D.");
@@ -451,10 +489,10 @@ static void PaintQuests(int movement, bool toggleHints) {
     }
 
     const auto chapter = Value("KAPITEL");
-    if (chapter != 2 || !(tamora ? OnTamora() : OnKondehra())) {
+    if (chapter != 2 || CurrentLocation() != SelectedLocation()) {
         Text(3, L"Вы сейчас вне выбранной локации или главы.");
     } else if (beforeDeparture) {
-        Text(3, L"Проверьте оставшиеся дела. Звёздочкой отмечены задания с продолжением вне острова.");
+        Text(3, L"Проверьте оставшиеся дела. Звёздочкой отмечено продолжение в другой локации.");
     }
 
     std::vector<std::size_t> visible;
@@ -493,7 +531,7 @@ static void PaintQuests(int movement, bool toggleHints) {
         const auto& item = questItems[id];
         std::string title = i == selected ? "> " : "  ";
         title += item.title.empty() ? Russian(L"Название отсутствует") : item.title;
-        if (CatalogQuest(id).continuesBeyondIsland) title += " *";
+        if (catalog.entries[id].continuesBeyondIsland) title += " *";
         const auto status = Russian(StatusText(item.result.status));
         const int row = 5 + i - first;
         if (showHints) {
@@ -508,14 +546,13 @@ static void PaintQuests(int movement, bool toggleHints) {
     if (!showHints) return;
 
     const auto& item = questItems[selectedId];
-    const auto& quest = CatalogQuest(selectedId);
+    const auto& quest = catalog.entries[selectedId];
     int row = WrappedText(4, item.title.empty() ? Russian(L"Подсказка") : item.title);
     row = WrappedText(row + 1, Russian(Reason(selectedId, item.result.evidence)));
     row = WrappedText(row + 1, Russian(quest.start));
     row = WrappedText(row + 1, Russian(quest.finish));
-    const auto id = static_cast<QuestId>(selectedId);
-    const wchar_t* notice = tamora ? quest.caution : WindowNotice(id);
-    const wchar_t* chain = tamora ? quest.chain : Chain(id);
+    const wchar_t* notice = kondehra ? WindowNotice(static_cast<QuestId>(selectedId)) : quest.caution;
+    const wchar_t* chain = kondehra ? Chain(static_cast<QuestId>(selectedId)) : quest.chain;
     if (notice) row = WrappedText(row + 1, Russian(notice));
     if (chain) WrappedText(row + 1, Russian(chain));
 }
@@ -559,7 +596,7 @@ struct Key {
 };
 
 static Key filterKey{KEY_F}, departureKey{KEY_V}, diagnosticKey{KEY_D};
-static Key previousKey{KEY_PGUP}, nextKey{KEY_PGDN}, hintKey{KEY_H}, islandKey{KEY_T};
+static Key previousKey{KEY_PGUP}, nextKey{KEY_PGDN}, hintKey{KEY_H}, locationKey{KEY_T};
 
 static void Loop() {
     if (loading || !zinput || !player || !screen || !parser || !ogame || !ogame->GetGameWorld()) return;
@@ -569,14 +606,14 @@ static void Loop() {
     const bool departurePressed = departureKey.Pressed() && shift;
     const bool diagnosticPressed = diagnosticKey.Pressed() && shift;
     const bool hintPressed = hintKey.Pressed() && shift;
-    const bool islandPressed = islandKey.Pressed() && shift;
+    const bool locationPressed = locationKey.Pressed() && shift;
     const int movement = static_cast<int>(nextKey.Pressed()) - static_cast<int>(previousKey.Pressed());
 
     if (zinput->KeyToggled(KEY_APOSTROPHE)) {
         opened = !opened;
         revealedQuest.reset();
         if (opened) {
-            if (OnTamora() && islandView != IslandView::Tamora && questItems.empty()) islandView = IslandView::Tamora;
+            if (!location) location = CurrentLocation().value_or(Location::Kondehra);
             if (diagnostics) RefreshRaw();
             else RefreshQuests();
         }
@@ -597,8 +634,9 @@ static void Loop() {
         PaintRaw();
         return;
     }
-    if (islandPressed) {
-        islandView = islandView == IslandView::Tamora ? IslandView::Kondehra : IslandView::Tamora;
+    if (locationPressed) {
+        const auto next = (static_cast<std::size_t>(SelectedLocation()) + 1) % std::size(catalogs);
+        location = static_cast<Location>(next);
         questFilter = selected = 0;
         revealedQuest.reset();
         RefreshQuests();
@@ -606,7 +644,7 @@ static void Loop() {
     if (departurePressed) { beforeDeparture = !beforeDeparture; questFilter = 0; selected = 0; revealedQuest.reset(); }
     if (filterPressed) { questFilter = (questFilter + 1) % questFilterCount; selected = 0; revealedQuest.reset(); }
     if (refreshPressed || std::chrono::steady_clock::now() >= nextRefresh) RefreshQuests();
-    PaintQuests(movement, hintPressed && !islandPressed);
+    PaintQuests(movement, hintPressed && !locationPressed);
 }
 
 class LoadScope {
@@ -622,7 +660,7 @@ public:
         questFilter = rawFilter = page = selected = 0;
         rawItems.clear();
         questItems.clear();
-        islandView = IslandView::Kondehra;
+        location.reset();
     }
     ~LoadScope() { loading = wasLoading; }
 };

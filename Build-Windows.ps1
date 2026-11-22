@@ -21,11 +21,10 @@ git -C $template checkout --detach $templateCommit
 Check "Failed to select pinned Union template"
 git -C $template submodule update --init --recursive
 Check "Failed to fetch Union dependencies"
-Copy-Item (Join-Path $root "src/Plugin.ipp") (Join-Path $template "src/Plugin.ipp") -Force
-Copy-Item (Join-Path $root "src/kondehra.hpp") (Join-Path $template "src/kondehra.hpp") -Force
-Copy-Item (Join-Path $root "src/tamora.hpp") (Join-Path $template "src/tamora.hpp") -Force
-Copy-Item (Join-Path $root "src/tamora_rules.hpp") (Join-Path $template "src/tamora_rules.hpp") -Force
-Copy-Item (Join-Path $root "src/quest_manifest.hpp") (Join-Path $template "src/quest_manifest.hpp") -Force
+$sources = @("Plugin.ipp", "quest_manifest.hpp", "kondehra.hpp", "tamora.hpp", "tamora_rules.hpp", "albatros.hpp", "albatros_rules.hpp")
+foreach ($source in $sources) {
+  Copy-Item (Join-Path $root "src/$source") (Join-Path $template "src/$source") -Force
+}
 $cmake = Join-Path $template "CMakeLists.txt"
 $body = [IO.File]::ReadAllText($cmake)
 $body = $body.Replace("project(UnionPlugin", "project(OdysseeQuestInspector")

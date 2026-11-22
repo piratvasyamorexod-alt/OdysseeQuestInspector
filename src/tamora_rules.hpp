@@ -1,6 +1,6 @@
 #pragma once
 
-static Start TamoraOffer(const char* npc, const char* dialog,
+static Start DialogOffer(const char* npc, const char* dialog,
                          std::initializer_list<std::pair<std::optional<int>, int>> checks = {}) {
     const auto ready = Require(checks);
     if (ready != Start::Yes) return ready;
@@ -22,11 +22,11 @@ static Start TamoraStartRule(OQITamora::QuestId id) {
     const auto mission = Value("MIS_TAMORAMISSION");
     switch (id) {
     case T::Mission:
-        return TamoraOffer("PAL_99002_GERNOT", "DIA_GERNOT_TAMORA",
+        return DialogOffer("PAL_99002_GERNOT", "DIA_GERNOT_TAMORA",
             {{Told("DIA_GERNOT_KONDEHRAMISSONBEENDET"), 1}, {Value("MIS_KONDEHRAMISSION"), 1},
              {Value("MIS_WOLFGANG_DIEBSTAHL"), 2}, {Value("MIS_SVEN_SUMPFKRAUTHANDEL"), 2}});
     case T::Blade: {
-        const auto start = TamoraOffer("PAL_99002_GERNOT", "DIA_GERNOT_PALADINKLINGE",
+        const auto start = DialogOffer("PAL_99002_GERNOT", "DIA_GERNOT_PALADINKLINGE",
             {{Told("DIA_GERNOT_TAMORA"), 1}, {Value("MIS_FLUCHFRIEDHOF"), 1},
              {Told("DIA_STAMMLER_RITUAL"), 1}});
         return start == Start::Yes ? start : Start::Unknown; // A later Faring trigger is also possible.
@@ -64,72 +64,72 @@ static Start TamoraStartRule(OQITamora::QuestId id) {
     constexpr const char* hermit = "NONE_22010_EINSIEDLER";
     switch (id) {
     case T::Governor:
-        return TamoraOffer("MIL_29_JOSEPH", "MIL_29_JOSEPH_GERNOT",
+        return DialogOffer("MIL_29_JOSEPH", "MIL_29_JOSEPH_GERNOT",
             {{Told("MIL_29_JOSEPH_ALBATROS"), 1}});
     case T::Advisor:
     case T::Bribe:
-        return TamoraOffer(stephan, "DIA_PAL_21_STEPHAN_WASTUN",
+        return DialogOffer(stephan, "DIA_PAL_21_STEPHAN_WASTUN",
             {{Told("DIA_PAL_21_STEPHAN_HALLO"), 1}, {Value("MIS_WEGZUBRUNO"), 1}});
     case T::Arrows:
-        return TamoraOffer("MIL_14_FINKO", "MIL_14_FINKO_LASSMICHRATEN",
+        return DialogOffer("MIL_14_FINKO", "MIL_14_FINKO_LASSMICHRATEN",
             {{Told("MIL_14_FINKO_ERSTEBEGEGNUNG"), 1}});
     case T::Berries:
-        return TamoraOffer(barkeeper, "VLK_56_BARKEEPER_SCHNAPSBEEREN",
+        return DialogOffer(barkeeper, "VLK_56_BARKEEPER_SCHNAPSBEEREN",
             {{Told("DIA_VLK_56_BARKEEPER_HALLO"), 1}});
     case T::Juniper:
-        return TamoraOffer(barkeeper, "VLK_56_BARKEEPER_BESONDERERSCHNAPS",
+        return DialogOffer(barkeeper, "VLK_56_BARKEEPER_BESONDERERSCHNAPS",
             {{Value("MIS_SCHNAPSBEEREN"), 2}, {mission, 1}});
     case T::Dice:
-        return TamoraOffer("MIL_12512_MITCH", "DIA_12512_MITCH_LANGEWEILE",
+        return DialogOffer("MIL_12512_MITCH", "DIA_12512_MITCH_LANGEWEILE",
             {{Told("DIA_12512_MITCH_HALLO"), 1}, {Value("ENTERTAMORA_KAPITEL4"), 0}});
     case T::Honey:
-        return TamoraOffer("VLK_7701_BUERGERIN", "DIA_7701_BUERGERIN_HILFE",
+        return DialogOffer("VLK_7701_BUERGERIN", "DIA_7701_BUERGERIN_HILFE",
             {{Told("DIA_7701_BUERGERIN_FULKO"), 1}, {Told("DIA_7701_BUERGERIN_BEWOHNER"), 1},
              {Told("DIA_7701_BUERGERIN_STATTHALTER"), 1}, {mission, 1}});
     case T::Watch: {
         if (ReadableStart("ITWR_MOD_TURMWACHEZETTEL", "TURMWACHELETZTENACHRICHTGELESEN") == Start::Yes) {
             return Start::Yes;
         }
-        const auto start = TamoraOffer(stephan, "DIA_PAL_21_STEPHAN_WACHTUM",
+        const auto start = DialogOffer(stephan, "DIA_PAL_21_STEPHAN_WACHTUM",
             {{Told("DIA_PAL_21_STEPHAN_WASTUN"), 1}, {Value("TURMWACHELETZTENACHRICHTGELESEN"), 0}});
         return start == Start::Yes ? start : Start::Unknown;
     }
     case T::Thief:
-        return TamoraOffer("MIL_31_KLAUS", "DIA_KLAUS_FINDE_DEN_DIEB",
+        return DialogOffer("MIL_31_KLAUS", "DIA_KLAUS_FINDE_DEN_DIEB",
             {{Told("DIA_KLAUSTAMORA_HALLO"), 1}});
     case T::Stammler: {
-        const auto start = TamoraOffer(barkeeper, "DIA_VLK_56_BARKEEPER_INFOGEGEND",
+        const auto start = DialogOffer(barkeeper, "DIA_VLK_56_BARKEEPER_INFOGEGEND",
             {{Told("DIA_VLK_56_BARKEEPER_HALLO"), 1}});
         return start == Start::Yes ? start : Start::Unknown; // There are also crypt and book starts.
     }
     case T::Bow:
-        return TamoraOffer("OUT_99_HANS", "OUT_99_HANS_BOGENHOLEN",
+        return DialogOffer("OUT_99_HANS", "OUT_99_HANS_BOGENHOLEN",
             {{Told("OUT_99_HANS_VOMWAFFENHAENDLER"), 1}});
     case T::Hides:
-        return TamoraOffer("OUT_10000_MARKUS", "OUT_10000_MARKUS_VONFINKO",
+        return DialogOffer("OUT_10000_MARKUS", "OUT_10000_MARKUS_VONFINKO",
             {{Told("OUT_10000_MARKUS_HALLO"), 1}, {Told("OUT_99_HANS_DEINPAKET"), 1}});
     case T::Prisoner: {
-        const auto start = TamoraOffer(barkeeper, "VLK_56_BARKEEPER_INFOFULKO",
+        const auto start = DialogOffer(barkeeper, "VLK_56_BARKEEPER_INFOFULKO",
             {{Told("VLK_56_BARKEEPER_SCHNAPSBEEREN"), 1}, {Value("MIS_FULKO"), 1},
              {Told("DIA_FULKO_ORKFLOTTE"), 1}});
         return start == Start::Yes && FindLivingNpc("NONE_22007_FULKO") ? Start::Yes : Start::Unknown;
     }
     case T::Servant: {
-        const auto start = TamoraOffer(servant, "DIA_DIENERTAMORA_HERKUNFT",
+        const auto start = DialogOffer(servant, "DIA_DIENERTAMORA_HERKUNFT",
             {{Told("DIA_DIENERTAMORA_ORKFLOTTE"), 1}});
         return start == Start::Yes ? start : Start::Unknown;
     }
     case T::Ghosts:
     case T::Hall:
-        return TamoraOffer(servant, "DIA_DIENERTAMORA_ESSPUKT",
+        return DialogOffer(servant, "DIA_DIENERTAMORA_ESSPUKT",
             {{Told("DIA_DIENERTAMORA_AMULETTGEFUNDEN"), 1}, {Value("MIS_FULKO"), 1},
              {Value("MIS_TAGEBUCHDESDIENERS"), 2}, {Value("MIS_DERDIEB"), 2},
              {Value("TAGEBUCHDESDIENERSGELESEN"), 1}});
     case T::Poltergeist:
-        return TamoraOffer(servant, "DIA_DIENERTAMORA_GEISTERSTUNDE",
+        return DialogOffer(servant, "DIA_DIENERTAMORA_GEISTERSTUNDE",
             {{Value("MIS_GEISTERSTUNDESAAL"), 1}, {Value("GEISTERSTUNDETAMORA"), 1}});
     case T::Negotiations: {
-        const auto start = TamoraOffer(bruno, "DIA_PAL_3_BRUNO_VERHANDLUNGEN",
+        const auto start = DialogOffer(bruno, "DIA_PAL_3_BRUNO_VERHANDLUNGEN",
             {{Told("DIA_PAL_3_BRUNO_HALLO"), 1}, {Value("MIS_FULKO"), 2}, {Value("VERHANDLUNGENJACKO"), 0}});
         const auto mercenaries = Value("MIS_ORKSOELDNERTAMORA");
         if (start == Start::Yes && mercenaries && *mercenaries != 2) {
@@ -140,32 +140,32 @@ static Start TamoraStartRule(OQITamora::QuestId id) {
     }
     case T::Mines:
     case T::Miners:
-        return TamoraOffer(bruno, "DIA_PAL_3_BRUNO_MINEN",
+        return DialogOffer(bruno, "DIA_PAL_3_BRUNO_MINEN",
             {{Told("DIA_PAL_3_BRUNO_FUERDENKOENIG"), 1}, {mission, 1}});
     case T::Salt:
-        return TamoraOffer(bruno, "DIA_PAL_3_BRUNO_SALZMINE", {{Value("MIS_TAMORAMINEN"), 1}});
+        return DialogOffer(bruno, "DIA_PAL_3_BRUNO_SALZMINE", {{Value("MIS_TAMORAMINEN"), 1}});
     case T::Ore:
-        return TamoraOffer(bruno, "DIA_PAL_3_BRUNO_ERZMINE", {{Value("MIS_TAMORAMINEN"), 1}});
+        return DialogOffer(bruno, "DIA_PAL_3_BRUNO_ERZMINE", {{Value("MIS_TAMORAMINEN"), 1}});
     case T::Silver: {
-        const auto start = TamoraOffer(bruno, "DIA_PAL_3_BRUNO_SILBERMINE", {{Value("MIS_TAMORAMINEN"), 1}});
+        const auto start = DialogOffer(bruno, "DIA_PAL_3_BRUNO_SILBERMINE", {{Value("MIS_TAMORAMINEN"), 1}});
         return start == Start::Yes ? start : Start::Unknown;
     }
     case T::Adanos:
-        return TamoraOffer("KDW_18_TELEM", "DIA_TELEM_ADANOSSCHREIN",
+        return DialogOffer("KDW_18_TELEM", "DIA_TELEM_ADANOSSCHREIN",
             {{Value("KLAUSFINDEDENDIEBMEINETWEGEN"), 1}, {Value("MIS_DERDIEB"), 2}});
     case T::Dress:
-        return TamoraOffer("VLK_7710_BUERGERIN", "DIA_7710_BUERGERIN_HILFE",
+        return DialogOffer("VLK_7710_BUERGERIN", "DIA_7710_BUERGERIN_HILFE",
             {{Told("DIA_7710_BUERGERIN_STATTHALTER"), 1}});
     case T::Griffin:
-        return TamoraOffer("NONE_22009_SCHAEFER", "DIA_22009_SCHAEFER_PROBLEM",
+        return DialogOffer("NONE_22009_SCHAEFER", "DIA_22009_SCHAEFER_PROBLEM",
             {{Told("DIA_NONE_22009_SCHAEFER_PEOPLE"), 1}});
     case T::Treasure: {
-        const auto start = TamoraOffer(hermit, "DIA_22010_EINSIEDLER_SCHATZSUCHE",
+        const auto start = DialogOffer(hermit, "DIA_22010_EINSIEDLER_SCHATZSUCHE",
             {{Told("DIA_22010_EINSIEDLER_NOCHMALWARUMHIER"), 1}});
         return start == Start::Yes ? start : Start::Unknown;
     }
     case T::Book:
-        return TamoraOffer("PAL_13_RUBEN", "DIA_RUBEN_DANIELSSUCHE",
+        return DialogOffer("PAL_13_RUBEN", "DIA_RUBEN_DANIELSSUCHE",
             {{Told("DIA_RUBEN_DANIELSBRIEF"), 1}, {Value("DANIELSBRIEFGELESEN"), 1},
              {Value("MIS_VERMISSTERBRUDER"), 1}});
     default: return Start::Unknown;
