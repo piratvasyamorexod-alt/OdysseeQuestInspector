@@ -1,15 +1,30 @@
 # Odyssee Quest Inspector
 
-Prototype **Union C++ plugin** for Gothic II: Odyssee (G2A, Windows x86), **no Ninja**.
+Union-плагин для Gothic II: Ночь Ворона (Windows x86). Показывает задания Кондеры во второй главе русской «Одиссеи» 2.7.5.2, включая задания, которые ещё не появились в журнале. [Каталог и источники правил](docs/kondehra-2.md)
 
-**Controls:** apostrophe `'` toggles overlay; F6 cycles flag filters; left/right turns pages; R reloads parser values.
+## Управление
 
-Shows **734 known MIS_ variable names** collected from a 2024 Odyssee save. Raw values do not equal canonical quest counts and do not prove anything was missed. Read-only, no quest edits.
+| Клавиши | Действие |
+|---|---|
+| Апостроф `'` | Открыть или закрыть инспектор |
+| Shift+F | Сменить фильтр в открытом инспекторе |
+| Shift+V | Переключить режим «Перед отплытием» |
+| PgUp / PgDn | Выбрать задание и посмотреть условия |
+| Shift+D | Перейти к диагностике флагов или вернуться к заданиям |
+| ← / → | Перелистнуть страницу диагностики |
+| R | Перечитать данные |
 
-## Windows build
+В прототипе F6 была общей с уже назначенной игровой функцией. Он проверял `KeyToggled(KEY_F6)` в хуке рендера. Такой вызов мог видеть другой результат после обработки ввода игрой или другим плагином. Точная причина зависит от сборки и требует игрового теста. Новый фильтр отслеживает переход `KeyPressed` для Shift+F в открытом инспекторе. Новые клавиши не записываются в конфигурацию.
 
-Use Visual Studio 2022 + C++ workload, CMake and Git; execute `Build-Windows.ps1`, which retrieves the [public Union plugin template](https://github.com/Patrix9999/union-plugin-template), compiles x86 Gothic II Addon and packages `release/OdysseeQuestInspector.vdf`.
+## Сборка и установка
 
-Or download a successful GitHub Actions build artifact from **Actions → Build Union G2A VDF**.
+В [Actions](https://github.com/piratvasyamorexod-alt/OdysseeQuestInspector/actions) выберите успешную сборку своего коммита и скачайте `OdysseeQuestInspector-G2A-Union`. Для локальной сборки запустите `Build-Windows.ps1` с Visual Studio 2022, CMake и Git. Скрипт использует закреплённую ревизию шаблона Union и помещает пакет в `release/OdysseeQuestInspector.vdf`.
 
-**Status:** prototype pending Windows CI and in-game validation. A build success alone does not guarantee game compatibility. Back up saves and test with a disposable install first. Install resulting VDF into `Gothic II/Data/`.
+Перед игровым тестом сделайте резервную копию сохранений. Закройте игру. Если прежняя версия инспектора установлена, уберите её из `Gothic II/Data` и положите туда новый VDF. Для удаления закройте игру и уберите VDF из этой папки. Пакет содержит DLL плагина и требуемую шаблоном `UnionAPI.dll`. Нужен Union. Плагин читает состояние игры и выводит оверлей, без Ninja и записи в квесты, сейвы или `Gothic.ini`.
+
+## Проверка
+
+- CI проверяет переходы статусов на синтетических состояниях, затем собирает Win32 VDF.
+- В игре пользователь проверил предыдущий прототип. Новую версию нужно проверить с теми же Union, рендерером и модами. Сравните два сохранения на Кондере с разным прогрессом. Откройте окно апострофом, переключите фильтр Shift+F, выберите задание PgUp/PgDn и сравните статус с журналом и ходом квеста. Проверьте Shift+V, Shift+D, стрелки и R.
+- Загрузите второе сохранение с открытым окном, затем начните новую игру и смените локацию. Окно должно закрыться на загрузке и показывать актуальные данные при следующем открытии.
+- Для веток пропуска проверьте на отдельном сохранении отказ от крыс или посоха. Другие задания сохраняют собственный статус при переходе на корабль. Если русский текст искажён или есть конфликт клавиш, запишите версию Union, рендерер и комбинацию клавиш, на которой это произошло.
