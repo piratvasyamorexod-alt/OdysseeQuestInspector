@@ -448,7 +448,7 @@ static const wchar_t* StatusText(Status status) {
 static const wchar_t* Reason(std::size_t id, const QuestItem& item) {
     const auto status = item.result.status;
     if (currentVisit && item.step == Step::Deferred && status != Status::Done && status != Status::Missed) {
-        return L"Этот этап относится к другой локации или к более позднему моменту сюжета.";
+        return L"Этот этап относится к другой локации или к другому моменту сюжета.";
     }
     if (currentVisit && item.step == Step::Done && status != Status::Done) {
         return L"Этап текущего визита уже завершён.";
@@ -511,7 +511,7 @@ static const wchar_t* DepartureLabel(Step step) {
     case Step::Missed: return L"Пропущено";
     case Step::Unknown: return L"Нужно проверить";
     case Step::Done: return L"Этап завершён";
-    default: return L"Позже";
+    default: return L"Другой этап";
     }
 }
 
@@ -526,7 +526,7 @@ static void PaintProgress() {
     } else {
         line = Russian(L"Нет данных для процента");
     }
-    line += Russian(L" | Позже: ") + std::to_string(progress.deferred);
+    line += Russian(L" | Другой этап: ") + std::to_string(progress.deferred);
     line += Russian(L" | Пропущено: ") + std::to_string(progress.missed);
     line += Russian(L" | Неясно здесь: ") + std::to_string(progress.unknown);
     Text(3, FitText(line, rightEdge - leftX).c_str());
@@ -599,7 +599,7 @@ static void PaintQuests(int movement, bool toggleHints) {
         const auto globalStatus = item.result.status;
         if (currentVisit && !beforeDeparture) {
             if (item.step == Step::Deferred && globalStatus != Status::Done && globalStatus != Status::Missed) {
-                title += Russian(L"Позже · ");
+                title += Russian(L"Другой этап · ");
             } else if (item.step == Step::Open && globalStatus == Status::Later) {
                 title += Russian(L"Откроется здесь · ");
             } else if (item.step == Step::Open && globalStatus == Status::Unknown) {
