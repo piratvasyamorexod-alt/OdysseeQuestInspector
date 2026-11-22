@@ -391,15 +391,25 @@ static bool ShiftDown() {
 }
 
 class JournalView : public zCView {
+    oCGame& game;
+
 public:
     JournalInput pending;
 
-    JournalView() : zCView(296, 610, 7600, 6520) {
+    explicit JournalView(oCGame& game) : zCView(296, 610, 7600, 6520), game(game) {
         SetFont(screen->GetFont());
         InsertBack(zSTRING("OQI_JOURNAL.TGA"));
+        // The stock log screen uses the engine pause without a pause message.
+        game.Pause(0);
         screen->InsertItem(this);
         SetEnableHandleEvent(TRUE);
         SetHandleEventTop();
+    }
+
+    ~JournalView() override {
+        SetEnableHandleEvent(FALSE);
+        if (owner) owner->RemoveItem(this);
+        if (game.IsOnPause()) game.Unpause();
     }
 
     int HandleEvent(int key) override {
@@ -419,12 +429,7 @@ public:
         case KEY_RIGHT: ++pending.locations; return TRUE;
         case KEY_RETURN:
         case KEY_NUMPADENTER: pending.hint = true; return TRUE;
-        case KEY_F:
-        case KEY_V:
-        case KEY_D:
-        case KEY_H:
-        case KEY_T: return ShiftDown();
-        default: return FALSE;
+        default: return TRUE;
         }
     }
 };
@@ -440,11 +445,7 @@ static void HideHint() {
 
 static void CloseJournal() {
     HideHint();
-    if (!journal) return;
-    journal->SetEnableHandleEvent(FALSE);
-    if (journal->owner) journal->owner->RemoveItem(journal);
-    delete journal;
-    journal = nullptr;
+    delete std::exchange(journal, nullptr);
 }
 
 struct JournalLayout {
@@ -849,7 +850,7 @@ static void Loop() {
     const bool hintPressed = hintKey.Pressed() && shift;
     const bool locationPressed = locationKey.Pressed() && shift;
     const bool toggle = zinput->KeyToggled(KEY_APOSTROPHE);
-    if (ogame->IsOnPause() || player->inventory2.IsOpen()
+    if (player->inventory2.IsOpen()
         || !oCInformationManager::GetInformationManager().HasFinished()) {
         CloseJournal();
         return;
@@ -860,8 +861,8 @@ static void Loop() {
         return;
     }
     if (!journal) {
-        if (!toggle || !screen->GetFont()) return;
-        journal = new JournalView();
+        if (!toggle || ogame->IsOnPause() || !screen->GetFont()) return;
+        journal = new JournalView(*ogame);
         if (!location) location = CurrentLocation().value_or(Location::Kondehra);
         if (diagnostics) RefreshRaw();
         else RefreshQuests();
@@ -936,12 +937,15 @@ public:
 
 }  // namespace OQI
 
-// The main-world render point is the G2A address supplied by the Union template.
-void __fastcall OQI_Render(Union::Registers&);
-auto OQI_RenderHook = Union::CreatePartialHook(
-    reinterpret_cast<void*>(zSwitch(0x0, 0x0, 0x0, 0x006C87EB)), &OQI_Render);
+// Refresh the journal before the renderer handles the paused world.
+void __fastcall OQI_Render(oCGame*, void*);
+auto OQI_RenderHook = Union::CreateHook(
+    SIGNATURE_OF(&oCGame::Render), &OQI_Render, Union::HookType::Hook_Detours);
 
-void __fastcall OQI_Render(Union::Registers&) { OQI::Loop(); }
+void __fastcall OQI_Render(oCGame* self, void* vtable) {
+    OQI::Loop();
+    OQI_RenderHook(self, vtable);
+}
 
 void __fastcall OQI_LoadGame(oCGame*, void*, int, const zSTRING&);
 auto OQI_LoadGameHook = Union::CreateHook(
