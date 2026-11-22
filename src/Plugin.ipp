@@ -402,7 +402,7 @@ public:
         SetFont(screen->GetFont());
         InsertBack(zSTRING("OQI_JOURNAL.TGA"));
         SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
-        SetTransparency(255);
+        SetTransparency(166);
         // Use the engine pause with its built-in message suppressed.
         game.Pause();
         screen->InsertItem(this);
@@ -414,6 +414,14 @@ public:
         SetEnableHandleEvent(FALSE);
         if (owner) owner->RemoveItem(this);
         if (game.IsOnPause()) game.Unpause();
+    }
+
+    void Blit() override {
+        // Apply the view's opacity even if the preceding draw used a constant alpha factor.
+        const auto previousSource = zrenderer->GetAlphaBlendSource();
+        zrenderer->SetAlphaBlendSource(zRND_ALPHA_SOURCE_MATERIAL);
+        zCView::Blit();
+        zrenderer->SetAlphaBlendSource(previousSource);
     }
 
     int HandleEvent(int key) override {
