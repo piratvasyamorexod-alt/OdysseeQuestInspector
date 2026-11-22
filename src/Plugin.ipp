@@ -399,8 +399,8 @@ public:
     explicit JournalView(oCGame& game) : zCView(296, 610, 7600, 6520), game(game) {
         SetFont(screen->GetFont());
         InsertBack(zSTRING("OQI_JOURNAL.TGA"));
-        // The stock log screen uses the engine pause without a pause message.
-        game.Pause(0);
+        // Use the engine pause with its built-in message suppressed.
+        game.Pause();
         screen->InsertItem(this);
         SetEnableHandleEvent(TRUE);
         SetHandleEventTop();
