@@ -584,7 +584,6 @@ static void PaintQuests(int movement, bool toggleHints) {
         if (revealedQuest) revealedQuest.reset();
         else revealedQuest = selectedId;
     }
-    const bool showHints = revealedQuest.has_value();
 
     const int rows = std::clamp((7150 - topY) / RowHeight() - 5, 1, 15);
     const int first = (selected / rows) * rows;
@@ -612,16 +611,12 @@ static void PaintQuests(int movement, bool toggleHints) {
         if (catalog.entries[id].continuesBeyondIsland) title += " *";
         const auto status = Russian(beforeDeparture ? DepartureLabel(item.step) : StatusText(globalStatus));
         const int row = 5 + i - first;
-        if (showHints) {
-            const auto fittedStatus = FitText(status, (hintX - leftX) / 2);
-            const int statusX = hintX - 140 - TextWidth(fittedStatus);
-            Text(row, FitText(title, statusX - leftX - 120).c_str());
-            Text(row, fittedStatus.c_str(), statusX);
-        } else {
-            Text(row, FitText(title + " | " + status, rightEdge - leftX).c_str());
-        }
+        const auto fittedStatus = FitText(status, (hintX - leftX) / 2);
+        const int statusX = hintX - 140 - TextWidth(fittedStatus);
+        Text(row, FitText(title, statusX - leftX - 120).c_str());
+        Text(row, fittedStatus.c_str(), statusX);
     }
-    if (!showHints) return;
+    if (!revealedQuest) return;
 
     const auto& item = questItems[selectedId];
     const auto& quest = catalog.entries[selectedId];
