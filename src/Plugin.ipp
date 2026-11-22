@@ -21,7 +21,6 @@ namespace OQI {
 
 using namespace OQIKondehra;
 
-static bool opened = false;
 static bool loading = false;
 static bool verifiedBuild = false;
 static bool beforeDeparture = false;
@@ -378,60 +377,156 @@ static void RefreshRaw() {
     }
 }
 
-static constexpr int leftX = 260;
-static constexpr int hintX = 4510;
-static constexpr int rightEdge = 7950;
-static constexpr int topY = 300;
+struct JournalInput {
+    int selection = 0;
+    int pages = 0;
+    int locations = 0;
+    int hintLines = 0;
+    bool hint = false;
+    bool close = false;
+};
 
-static int RowHeight() {
-    auto* font = screen->GetFont();
-    return font ? (std::max)(310, screen->any(font->GetFontY()) + 30) : 310;
+static bool ShiftDown() {
+    return zinput->KeyPressed(KEY_LSHIFT) || zinput->KeyPressed(KEY_RSHIFT);
 }
+
+class JournalView : public zCView {
+public:
+    JournalInput pending;
+
+    JournalView() : zCView(296, 610, 7600, 6520) {
+        SetFont(screen->GetFont());
+        InsertBack(zSTRING("OQI_JOURNAL.TGA"));
+        screen->InsertItem(this);
+        SetEnableHandleEvent(TRUE);
+        SetHandleEventTop();
+    }
+
+    int HandleEvent(int key) override {
+        switch (key) {
+        case KEY_ESCAPE: pending.close = true; return TRUE;
+        case KEY_UP:
+            if (ShiftDown()) --pending.hintLines;
+            else --pending.selection;
+            return TRUE;
+        case KEY_DOWN:
+            if (ShiftDown()) ++pending.hintLines;
+            else ++pending.selection;
+            return TRUE;
+        case KEY_PGUP: --pending.pages; return TRUE;
+        case KEY_PGDN: ++pending.pages; return TRUE;
+        case KEY_LEFT: --pending.locations; return TRUE;
+        case KEY_RIGHT: ++pending.locations; return TRUE;
+        case KEY_RETURN:
+        case KEY_NUMPADENTER: pending.hint = true; return TRUE;
+        case KEY_F:
+        case KEY_V:
+        case KEY_D:
+        case KEY_H:
+        case KEY_T: return ShiftDown();
+        default: return FALSE;
+        }
+    }
+};
+
+static JournalView* journal = nullptr;
+static int hintOffset = 0;
+static int firstVisible = 0;
+
+static void HideHint() {
+    revealedQuest.reset();
+    hintOffset = 0;
+}
+
+static void CloseJournal() {
+    HideHint();
+    if (!journal) return;
+    journal->SetEnableHandleEvent(FALSE);
+    if (journal->owner) journal->owner->RemoveItem(journal);
+    delete journal;
+    journal = nullptr;
+}
+
+struct JournalLayout {
+    int width;
+    int height;
+    int line;
+    int margin;
+    int listRight;
+    int details;
+    int footer;
+    int rows;
+
+    JournalLayout() {
+        int pixelsX, pixelsY;
+        journal->GetPixelSize(pixelsX, pixelsY);
+        width = journal->anx(pixelsX);
+        height = journal->any(pixelsY);
+        line = (std::max)(height / 21, journal->any(journal->GetFont()->GetFontY() + 4));
+        margin = width * 3 / 100;
+        listRight = width * 55 / 100;
+        details = width * 59 / 100;
+        footer = height - 2 * line - height / 50;
+        rows = (std::max)(0, (footer - height / 30) / line - 5);
+    }
+
+    int Y(int row) const { return height / 30 + row * line; }
+    int Right() const { return width - margin; }
+};
+
+enum class Ink : unsigned long {
+    Paper = 0xFFF1DFC1,
+    Muted = 0xFFBBAA90,
+    Gold = 0xFFE9BD79,
+    Done = 0xFFBCD19C,
+    Missed = 0xFFEAA291,
+};
 
 static int TextWidth(const std::string& text) {
-    auto* font = screen->GetFont();
-    return font ? screen->anx(font->GetFontX(zSTRING(text.c_str()))) : 0;
-}
-
-static void Text(int row, const char* text, int x = leftX) {
-    screen->Print(x, topY + row * RowHeight(), zSTRING(text));
+    return journal->anx(journal->GetFont()->GetFontX(zSTRING(text.c_str())));
 }
 
 static std::string FitText(std::string text, int width) {
+    if (width <= 0) return {};
     if (TextWidth(text) <= width) return text;
-    while (!text.empty() && TextWidth(text + "...") > width) text.pop_back();
+    const int ellipsis = TextWidth("...");
+    if (ellipsis > width) return {};
+    while (!text.empty() && TextWidth(text) + ellipsis > width) text.pop_back();
     return text + "...";
 }
 
-static int WrappedText(int row, const std::string& text) {
-    const int width = rightEdge - hintX;
-    const int rowLimit = (7600 - topY) / RowHeight();
+static void Text(int x, int y, const std::string& text, int width, Ink ink = Ink::Paper) {
+    const auto fitted = FitText(text, width);
+    if (fitted.empty()) return;
+    zCOLOR color;
+    color.dword = static_cast<unsigned long>(ink);
+    journal->CreateText(x, y, zSTRING(fitted.c_str()), 0.0f, color, 0, 1);
+}
+
+static std::vector<std::string> WrapText(const std::string& text, int width) {
+    std::vector<std::string> lines;
     std::string line;
-    for (std::size_t start = 0; start < text.size() && row <= rowLimit;) {
+    for (std::size_t start = 0; start < text.size();) {
         auto end = text.find(' ', start);
         if (end == std::string::npos) end = text.size();
         const auto word = text.substr(start, end - start);
-        const auto candidate = line.empty() ? word : line + ' ' + word;
+        auto candidate = line.empty() ? word : line + ' ' + word;
         if (!line.empty() && TextWidth(candidate) > width) {
-            Text(row++, FitText(line, width).c_str(), hintX);
+            lines.push_back(std::move(line));
             line = word;
         } else {
-            line = candidate;
+            line = std::move(candidate);
         }
         start = end + 1;
     }
-    if (!line.empty() && row <= rowLimit) Text(row++, FitText(line, width).c_str(), hintX);
-    return row;
+    if (!line.empty()) lines.push_back(std::move(line));
+    return lines;
 }
 
 static std::string Russian(const wchar_t* value) {
     char buffer[640] = {};
     WideCharToMultiByte(1251, 0, value, -1, buffer, sizeof(buffer), nullptr, nullptr);
     return buffer;
-}
-
-static void Text(int row, const wchar_t* value) {
-    Text(row, Russian(value).c_str());
 }
 
 static const wchar_t* StatusText(Status status) {
@@ -517,41 +612,130 @@ static const wchar_t* DepartureLabel(Step step) {
 
 static constexpr Step departureFilters[] = {Step::Open, Step::Missed, Step::Unknown};
 
-static void PaintProgress() {
-    std::string line;
-    if (const auto percent = progress.Percent()) {
-        line = Russian(L"Визит: ") + std::to_string(*percent) + "% ("
-            + std::to_string(progress.completed) + "/" + std::to_string(progress.Total()) + ")";
-        line += Russian(L" | Осталось: ") + std::to_string(progress.remaining);
-    } else {
-        line = Russian(L"Нет данных для процента");
-    }
-    line += Russian(L" | Другой этап: ") + std::to_string(progress.deferred);
-    line += Russian(L" | Пропущено: ") + std::to_string(progress.missed);
-    line += Russian(L" | Неясно здесь: ") + std::to_string(progress.unknown);
-    Text(3, FitText(line, rightEdge - leftX).c_str());
+static constexpr Location tabs[] = {Location::Kondehra, Location::Albatros, Location::Tamora};
+
+static int SelectedTab() {
+    return static_cast<int>(std::find(std::begin(tabs), std::end(tabs), SelectedLocation()) - std::begin(tabs));
 }
 
-static void PaintQuests(int movement, bool toggleHints) {
-    const auto& catalog = SelectedCatalog();
+static void PaintTabs(const JournalLayout& ui) {
+    const int cell = (ui.Right() - ui.margin) / static_cast<int>(std::size(tabs));
+    for (int i = 0; i < static_cast<int>(std::size(tabs)); ++i) {
+        const auto name = Russian(catalogs[static_cast<std::size_t>(tabs[i])].name);
+        const bool active = tabs[i] == SelectedLocation();
+        const auto label = active ? "[ " + name + " ]" : name;
+        Text(ui.margin + i * cell, ui.Y(1), label, cell - ui.margin / 2, active ? Ink::Gold : Ink::Muted);
+    }
+}
+
+static void PaintProgress(const JournalLayout& ui) {
+    std::string line;
+    if (!currentVisit) {
+        line = Russian(L"Прогресс визита доступен в текущей локации второй главы.");
+    } else if (const auto percent = progress.Percent()) {
+        line = Russian(L"До отплытия ") + std::to_string(*percent) + "% ("
+            + std::to_string(progress.completed) + "/" + std::to_string(progress.Total()) + ")"
+            + Russian(L"  ·  Осталось ") + std::to_string(progress.remaining);
+    } else {
+        line = Russian(L"Нет подтверждённых дел для расчёта прогресса.");
+    }
+    if (currentVisit) {
+        line += Russian(L"  ·  Пропущено ") + std::to_string(progress.missed);
+        line += Russian(L"  ·  Неясно ") + std::to_string(progress.unknown);
+        line += Russian(L"  ·  Другой этап ") + std::to_string(progress.deferred);
+    }
+    Text(ui.margin, ui.Y(2), line, ui.Right() - ui.margin, Ink::Muted);
+}
+
+static std::string QuestTitle(const QuestItem& item) {
+    return item.title.empty() ? Russian(L"Название отсутствует") : item.title;
+}
+
+static const wchar_t* QuestStatus(const QuestItem& item) {
+    if (beforeDeparture) return DepartureLabel(item.step);
+    const auto status = item.result.status;
+    if (currentVisit && status != Status::Done && status != Status::Missed) {
+        if (item.step == Step::Deferred) return L"Другой этап";
+        if (item.step == Step::Done) return L"Этап завершён";
+        if (item.step == Step::Open && status == Status::Later) return L"Откроется здесь";
+        if (item.step == Step::Open && status == Status::Unknown) return L"Местный этап";
+    }
+    return StatusText(status);
+}
+
+static void PaintDetails(const JournalLayout& ui, std::size_t id, int hintMovement) {
+    const auto& item = questItems[id];
+    const auto& quest = SelectedCatalog().entries[id];
+    const int width = ui.Right() - ui.details;
+    Text(ui.details, ui.Y(4), Russian(L"Выбранное задание"), width, Ink::Muted);
+
+    int row = 5;
+    for (const auto& line : WrapText(QuestTitle(item), width)) {
+        if (row >= 5 + ui.rows) return;
+        Text(ui.details, ui.Y(row++), line, width);
+    }
+    if (row >= 5 + ui.rows) return;
+    Text(ui.details, ui.Y(row++), Russian(QuestStatus(item)), width, Ink::Gold);
+    if (row >= 5 + ui.rows) return;
+
+    Text(ui.details, ui.Y(row++), Russian(revealedQuest ? L"Enter · Скрыть подсказку"
+                                                       : L"Enter · Показать подсказку"),
+         width, Ink::Muted);
+    if (!revealedQuest || row >= 5 + ui.rows) return;
+
+    std::vector<std::string> lines;
+    const auto append = [&](const wchar_t* paragraph) {
+        if (!paragraph || !*paragraph) return;
+        auto wrapped = WrapText(Russian(paragraph), width);
+        lines.insert(lines.end(), std::make_move_iterator(wrapped.begin()), std::make_move_iterator(wrapped.end()));
+    };
     const bool kondehra = SelectedLocation() == Location::Kondehra;
-    const auto heading = Russian(catalog.name) + Russian(L" · Глава 2 · ")
-        + Russian(beforeDeparture ? L"Перед отплытием" : L"Задания");
-    Text(0, heading.c_str());
-    Text(1, "Shift+F: FILTER | Shift+V: DEPARTURE | Shift+D: FLAGS | R");
-    Text(2, L"PgUp/PgDn: выбор | Shift+H: подсказка (спойлер) | Shift+T: локация");
+    append(Reason(id, item));
+    append(quest.start);
+    append(quest.finish);
+    append(kondehra ? WindowNotice(static_cast<QuestId>(id)) : quest.caution);
+    append(kondehra ? Chain(static_cast<QuestId>(id)) : quest.chain);
+    const int available = 5 + ui.rows - row;
+    const int count = static_cast<int>(lines.size());
+    const int capacity = count > available && available > 1 ? available - 1 : available;
+    hintOffset = std::clamp(hintOffset + hintMovement, 0, (std::max)(0, count - capacity));
+    for (int i = hintOffset; i < (std::min)(hintOffset + capacity, count); ++i) {
+        Text(ui.details, ui.Y(row++), lines[i], width);
+    }
+    if (capacity < available) {
+        Text(ui.details, ui.Y(row), Russian(L"Shift + вверх/вниз · Листать подсказку"), width, Ink::Muted);
+    }
+}
+
+static Ink QuestInk(const QuestItem& item) {
+    if (item.result.status == Status::Done || (currentVisit && item.step == Step::Done)) return Ink::Done;
+    if (item.result.status == Status::Missed || (currentVisit && item.step == Step::Missed)) return Ink::Missed;
+    return Ink::Muted;
+}
+
+static void PaintQuests(const JournalLayout& ui, const JournalInput& input) {
+    const auto& catalog = SelectedCatalog();
+    Text(ui.margin, ui.Y(0), Russian(L"Журнал экспедиции · Глава 2"), ui.Right() - ui.margin, Ink::Gold);
+    PaintTabs(ui);
+    Text(ui.margin, ui.footer, Russian(L"Вверх/вниз · Выбор    PgUp/PgDn · Страница    Влево/вправо · Локация"),
+         ui.Right() - ui.margin, Ink::Muted);
+    Text(ui.margin, ui.footer + ui.line, Russian(L"Esc · Закрыть    Shift+F · Фильтр    Shift+V · Перед отплытием    Shift+D · Флаги"),
+         ui.Right() - ui.margin, Ink::Muted);
     if (!verifiedBuild) {
-        Text(3, L"Скрипты русской версии 2.7.5.2 не распознаны.");
-        Text(4, L"Доступен просмотр значений по Shift+D.");
+        Text(ui.margin, ui.Y(2), Russian(L"Скрипты русской версии 2.7.5.2 не распознаны."), ui.Right() - ui.margin);
         return;
     }
 
-    if (currentVisit) {
-        PaintProgress();
-    } else {
-        Text(3, L"Вы сейчас вне выбранной локации или главы.");
-        if (beforeDeparture) return;
+    PaintProgress(ui);
+    const wchar_t* filter = L"Все";
+    if (questFilter != 0) {
+        filter = beforeDeparture ? DepartureLabel(departureFilters[questFilter - 1])
+                                 : StatusText(static_cast<Status>(questFilter - 1));
     }
+    const auto mode = Russian(beforeDeparture ? L"Перед отплытием" : L"Все задания");
+    Text(ui.margin, ui.Y(3), mode + Russian(L"  ·  Фильтр: ") + Russian(filter), ui.Right() - ui.margin);
+    if (beforeDeparture && !currentVisit) return;
+    if (ui.rows == 0) return;
 
     std::vector<std::size_t> visible;
     for (std::size_t i = 0; i < questItems.size(); ++i) {
@@ -564,96 +748,75 @@ static void PaintQuests(int movement, bool toggleHints) {
         }
         visible.push_back(i);
     }
-
-    const wchar_t* filter = L"Все";
-    if (questFilter != 0) {
-        filter = beforeDeparture ? DepartureLabel(departureFilters[questFilter - 1])
-                                 : StatusText(static_cast<Status>(questFilter - 1));
-    }
-    Text(4, (Russian(L"Фильтр: ") + Russian(filter)).c_str());
     if (visible.empty()) {
-        revealedQuest.reset();
-        Text(5, L"Для этого фильтра заданий нет.");
+        HideHint();
+        Text(ui.margin, ui.Y(5), Russian(L"Для этого фильтра заданий нет."), ui.Right() - ui.margin);
         return;
     }
-    const auto oldSelection = selected;
-    selected = std::clamp(selected + movement, 0, static_cast<int>(visible.size()) - 1);
+
+    const int count = static_cast<int>(visible.size());
+    const int oldSelection = selected;
+    selected = std::clamp(selected + input.selection + input.pages * ui.rows, 0, count - 1);
     const auto selectedId = visible[selected];
-    if (oldSelection != selected || revealedQuest != selectedId) revealedQuest.reset();
-    if (toggleHints) {
-        if (revealedQuest) revealedQuest.reset();
+    if (oldSelection != selected || revealedQuest != selectedId) HideHint();
+    if (input.hint) {
+        if (revealedQuest) HideHint();
         else revealedQuest = selectedId;
     }
 
-    const int rows = std::clamp((7150 - topY) / RowHeight() - 5, 1, 15);
-    const int first = (selected / rows) * rows;
-    const int end = (std::min)(first + rows, static_cast<int>(visible.size()));
-    const auto indicator = std::to_string(first + 1) + "-" + std::to_string(end)
-        + " / " + std::to_string(visible.size());
-    Text(4, indicator.c_str(), 3600);
-    for (int i = first; i < end; ++i) {
+    firstVisible = std::clamp(firstVisible, (std::max)(0, selected - ui.rows + 1), selected);
+    firstVisible = (std::min)(firstVisible, (std::max)(0, count - ui.rows));
+    const int end = (std::min)(firstVisible + ui.rows, count);
+    const auto indicator = std::to_string(firstVisible + 1) + "-" + std::to_string(end)
+        + " / " + std::to_string(count);
+    const int statusColumn = (ui.listRight - ui.margin) * 39 / 100;
+    const int statusHeading = ui.listRight - TextWidth(Russian(L"Статус"));
+    Text(ui.margin, ui.Y(4), indicator, statusHeading - ui.margin, Ink::Muted);
+    Text(statusHeading, ui.Y(4), Russian(L"Статус"), ui.listRight - statusHeading, Ink::Muted);
+    for (int i = firstVisible; i < end; ++i) {
         const auto id = visible[i];
         const auto& item = questItems[id];
         std::string title = i == selected ? "> " : "  ";
-        const auto globalStatus = item.result.status;
-        if (currentVisit && !beforeDeparture) {
-            if (item.step == Step::Deferred && globalStatus != Status::Done && globalStatus != Status::Missed) {
-                title += Russian(L"Другой этап · ");
-            } else if (item.step == Step::Open && globalStatus == Status::Later) {
-                title += Russian(L"Откроется здесь · ");
-            } else if (item.step == Step::Open && globalStatus == Status::Unknown) {
-                title += Russian(L"Местный этап · ");
-            } else if (item.step == Step::Done && globalStatus != Status::Done) {
-                title += Russian(L"Этап завершён · ");
-            }
-        }
-        title += item.title.empty() ? Russian(L"Название отсутствует") : item.title;
+        title += QuestTitle(item);
         if (catalog.entries[id].continuesBeyondIsland) title += " *";
-        const auto status = Russian(beforeDeparture ? DepartureLabel(item.step) : StatusText(globalStatus));
-        const int row = 5 + i - first;
-        const auto fittedStatus = FitText(status, (hintX - leftX) / 2);
-        const int statusX = hintX - 140 - TextWidth(fittedStatus);
-        Text(row, FitText(title, statusX - leftX - 120).c_str());
-        Text(row, fittedStatus.c_str(), statusX);
+        const auto status = Russian(QuestStatus(item));
+        const int y = ui.Y(5 + i - firstVisible);
+        const auto fittedStatus = FitText(status, statusColumn);
+        const int statusX = ui.listRight - TextWidth(fittedStatus);
+        Text(ui.margin, y, title, ui.listRight - statusColumn - ui.margin * 3 / 2,
+             i == selected ? Ink::Gold : Ink::Paper);
+        Text(statusX, y, fittedStatus, ui.listRight - statusX, QuestInk(item));
     }
-    if (!revealedQuest) return;
-
-    const auto& item = questItems[selectedId];
-    const auto& quest = catalog.entries[selectedId];
-    int row = WrappedText(4, item.title.empty() ? Russian(L"Подсказка") : item.title);
-    row = WrappedText(row + 1, Russian(Reason(selectedId, item)));
-    row = WrappedText(row + 1, Russian(quest.start));
-    row = WrappedText(row + 1, Russian(quest.finish));
-    const wchar_t* notice = kondehra ? WindowNotice(static_cast<QuestId>(selectedId)) : quest.caution;
-    const wchar_t* chain = kondehra ? Chain(static_cast<QuestId>(selectedId)) : quest.chain;
-    if (notice) row = WrappedText(row + 1, Russian(notice));
-    if (chain) WrappedText(row + 1, Russian(chain));
+    PaintDetails(ui, selectedId, input.hintLines);
 }
 
-static void PaintRaw() {
+static void PaintRaw(const JournalLayout& ui) {
     static constexpr const char* labels[] = {"ALL", "VALUE 1", "VALUE 2", "VALUE 0", "OTHER"};
     std::vector<const RawItem*> visible;
     for (const auto& item : rawItems) {
-        int match = item.value == 1 ? 1 : item.value == 2 ? 2 : item.value == 0 ? 3 : 4;
+        const int match = item.value == 1 ? 1 : item.value == 2 ? 2 : item.value == 0 ? 3 : 4;
         if (!rawFilter || rawFilter == match) visible.push_back(&item);
     }
     const int count = static_cast<int>(visible.size());
-    const int pages = (std::max)(1, (count + rawPageSize - 1) / rawPageSize);
+    const int pageSize = std::clamp(ui.rows, 1, rawPageSize);
+    const int pages = (std::max)(1, (count + pageSize - 1) / pageSize);
     page = std::clamp(page, 0, pages - 1);
+    const int width = ui.Right() - ui.margin;
+    Text(ui.margin, ui.Y(0), Russian(L"Журнал экспедиции · Флаги"), width, Ink::Gold);
     char line[256];
-    std::snprintf(line, sizeof(line), "ODYSSEE QUEST INSPECTOR | %s | %d/%d",
-                  labels[rawFilter], page + 1, pages);
-    Text(0, line);
-    std::snprintf(line, sizeof(line), "RAW FLAGS %d/%d", static_cast<int>(rawItems.size()), OQIManifest::kCount);
-    Text(1, line);
-    Text(2, "Shift+F: FILTER | Shift+D: QUESTS | LEFT/RIGHT: PAGE | R: REFRESH");
-    const int begin = page * rawPageSize;
-    const int end = (std::min)(begin + rawPageSize, count);
+    std::snprintf(line, sizeof(line), "%s | %d/%d | RAW FLAGS %d/%d", labels[rawFilter], page + 1, pages,
+                  static_cast<int>(rawItems.size()), OQIManifest::kCount);
+    Text(ui.margin, ui.Y(2), line, width, Ink::Muted);
+    Text(ui.margin, ui.footer, Russian(L"Влево/вправо · Страница    Shift+F · Фильтр    R · Обновить"), width, Ink::Muted);
+    Text(ui.margin, ui.footer + ui.line, Russian(L"Esc · Закрыть    Shift+D · Задания"), width, Ink::Muted);
+    if (ui.rows == 0) return;
+    const int begin = page * pageSize;
+    const int end = (std::min)(begin + pageSize, count);
     for (int i = begin; i < end; ++i) {
         std::snprintf(line, sizeof(line), "[%d] %s", visible[i]->value, visible[i]->name.c_str());
-        Text(4 + i - begin, line);
+        Text(ui.margin, ui.Y(5 + i - begin), line, width);
     }
-    if (!count) Text(4, "NO MATCHING FLAGS");
+    if (!count) Text(ui.margin, ui.Y(5), Russian(L"Для этого фильтра флагов нет."), width);
 }
 
 struct Key {
@@ -669,60 +832,87 @@ struct Key {
 };
 
 static Key filterKey{KEY_F}, departureKey{KEY_V}, diagnosticKey{KEY_D};
-static Key previousKey{KEY_PGUP}, nextKey{KEY_PGDN}, hintKey{KEY_H}, locationKey{KEY_T};
+static Key hintKey{KEY_H}, locationKey{KEY_T};
+
+static void ResetQuestSelection() {
+    selected = firstVisible = 0;
+    HideHint();
+}
 
 static void Loop() {
     if (loading || !zinput || !player || !screen || !parser || !ogame || !ogame->GetGameWorld()) return;
 
-    const bool shift = zinput->KeyPressed(KEY_LSHIFT) || zinput->KeyPressed(KEY_RSHIFT);
+    const bool shift = ShiftDown();
     const bool filterPressed = filterKey.Pressed() && shift;
     const bool departurePressed = departureKey.Pressed() && shift;
     const bool diagnosticPressed = diagnosticKey.Pressed() && shift;
     const bool hintPressed = hintKey.Pressed() && shift;
     const bool locationPressed = locationKey.Pressed() && shift;
-    const int movement = static_cast<int>(nextKey.Pressed()) - static_cast<int>(previousKey.Pressed());
-
-    if (zinput->KeyToggled(KEY_APOSTROPHE)) {
-        opened = !opened;
-        revealedQuest.reset();
-        if (opened) {
-            if (!location) location = CurrentLocation().value_or(Location::Kondehra);
-            if (diagnostics) RefreshRaw();
-            else RefreshQuests();
-        }
+    const bool toggle = zinput->KeyToggled(KEY_APOSTROPHE);
+    if (ogame->IsOnPause() || player->inventory2.IsOpen()
+        || !oCInformationManager::GetInformationManager().HasFinished()) {
+        CloseJournal();
+        return;
     }
-    if (!opened) return;
-    if (diagnosticPressed) {
-        diagnostics = !diagnostics;
-        revealedQuest.reset();
+
+    if (journal && (toggle || journal->pending.close)) {
+        CloseJournal();
+        return;
+    }
+    if (!journal) {
+        if (!toggle || !screen->GetFont()) return;
+        journal = new JournalView();
+        if (!location) location = CurrentLocation().value_or(Location::Kondehra);
         if (diagnostics) RefreshRaw();
         else RefreshQuests();
     }
+
+    auto input = std::exchange(journal->pending, JournalInput{});
+    input.hint = input.hint || hintPressed;
+    if (diagnosticPressed) {
+        diagnostics = !diagnostics;
+        HideHint();
+        input = {};
+        if (diagnostics) RefreshRaw();
+        else RefreshQuests();
+    }
+
     const bool refreshPressed = zinput->KeyToggled(KEY_R);
+    journal->ClrPrintwin();
+    const JournalLayout ui;
     if (diagnostics) {
         if (filterPressed) { rawFilter = (rawFilter + 1) % rawFilterCount; page = 0; }
         if (refreshPressed) RefreshRaw();
-        if (zinput->KeyToggled(KEY_LEFT)) --page;
-        if (zinput->KeyToggled(KEY_RIGHT)) ++page;
-        PaintRaw();
+        page += input.locations + input.pages;
+        PaintRaw(ui);
         return;
     }
-    if (locationPressed) {
-        const auto next = (static_cast<std::size_t>(SelectedLocation()) + 1) % std::size(catalogs);
-        location = static_cast<Location>(next);
-        questFilter = selected = 0;
-        revealedQuest.reset();
+
+    const int tabCount = static_cast<int>(std::size(tabs));
+    const int currentTab = SelectedTab();
+    const int movement = input.locations + static_cast<int>(locationPressed);
+    const int nextTab = (currentTab + movement % tabCount + tabCount) % tabCount;
+    if (nextTab != currentTab) {
+        location = tabs[nextTab];
+        questFilter = 0;
+        ResetQuestSelection();
+        input = {};
         RefreshQuests();
     }
-    if (departurePressed) { beforeDeparture = !beforeDeparture; questFilter = 0; selected = 0; revealedQuest.reset(); }
+    if (departurePressed) {
+        beforeDeparture = !beforeDeparture;
+        questFilter = 0;
+        ResetQuestSelection();
+        input.hint = false;
+    }
     if (filterPressed) {
         const int count = beforeDeparture ? 1 + static_cast<int>(std::size(departureFilters)) : questFilterCount;
         questFilter = (questFilter + 1) % count;
-        selected = 0;
-        revealedQuest.reset();
+        ResetQuestSelection();
+        input.hint = false;
     }
     if (refreshPressed || std::chrono::steady_clock::now() >= nextRefresh) RefreshQuests();
-    PaintQuests(movement, hintPressed && !locationPressed);
+    PaintQuests(ui, input);
 }
 
 class LoadScope {
@@ -730,12 +920,11 @@ class LoadScope {
 public:
     LoadScope() {
         loading = true;
-        opened = false;
+        CloseJournal();
         verifiedBuild = false;
         beforeDeparture = false;
         diagnostics = false;
-        revealedQuest.reset();
-        questFilter = rawFilter = page = selected = 0;
+        questFilter = rawFilter = page = selected = firstVisible = 0;
         rawItems.clear();
         questItems.clear();
         currentVisit = false;
@@ -779,6 +968,15 @@ auto OQI_ChangeLevelHook = Union::CreateHook(
 void __fastcall OQI_ChangeLevel(oCGame* self, void* vtable, const zSTRING& level, const zSTRING& start) {
     OQI::LoadScope load;
     OQI_ChangeLevelHook(self, vtable, level, start);
+}
+
+void __fastcall OQI_Done(oCGame*, void*);
+auto OQI_DoneHook = Union::CreateHook(
+    SIGNATURE_OF(&oCGame::Done), &OQI_Done, Union::HookType::Hook_Detours);
+
+void __fastcall OQI_Done(oCGame* self, void* vtable) {
+    OQI::LoadScope load;
+    OQI_DoneHook(self, vtable);
 }
 
 }  // namespace GOTHIC_NAMESPACE

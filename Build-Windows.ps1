@@ -25,6 +25,9 @@ $sources = @("Plugin.ipp", "quest_manifest.hpp", "kondehra.hpp", "tamora.hpp", "
 foreach ($source in $sources) {
   Copy-Item (Join-Path $root "src/$source") (Join-Path $template "src/$source") -Force
 }
+$textureDir = Join-Path $template "vdf/_Work/Data/Textures/_Compiled"
+New-Item -ItemType Directory -Force -Path $textureDir | Out-Null
+Copy-Item (Join-Path $root "textures/OQI_JOURNAL-C.TEX") $textureDir -Force
 $cmake = Join-Path $template "CMakeLists.txt"
 $body = [IO.File]::ReadAllText($cmake)
 $body = $body.Replace("project(UnionPlugin", "project(OdysseeQuestInspector")

@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'src/**'
+      - 'textures/**'
       - 'tests/**'
       - 'Build-Windows.ps1'
       - '.github/workflows/build.yml'
