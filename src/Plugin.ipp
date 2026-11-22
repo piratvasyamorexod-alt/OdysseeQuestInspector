@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "albatros.hpp"
+#include "departure.hpp"
 #include "kondehra.hpp"
 #include "quest_manifest.hpp"
 #include "tamora.hpp"
@@ -35,7 +36,13 @@ static std::optional<std::size_t> revealedQuest;
 static std::chrono::steady_clock::time_point nextRefresh;
 
 struct RawItem { std::string name; int value; };
-struct QuestItem { std::string title; Result result; };
+struct QuestItem {
+    std::string title;
+    Result result;
+    OQIDeparture::Step step = OQIDeparture::Step::Unknown;
+};
+static OQIDeparture::Progress progress;
+static bool currentVisit = false;
 static std::vector<RawItem> rawItems;
 static std::vector<QuestItem> questItems;
 
@@ -182,15 +189,20 @@ static std::optional<Location> CurrentLocation() {
     return std::nullopt;
 }
 
-static bool HasUnpackedItem(const char* name) {
+static int UnpackedAmount(const char* name) {
     const int index = parser->GetIndex(name);
-    if (index < 0) return false;
+    if (index < 0) return 0;
+    int amount = 0;
     const auto& items = player->inventory2.inventory;
     for (auto* node = items.GetNextInList(); node; node = node->GetNextInList()) {
         auto* item = node->GetData();
-        if (item && item->GetInstance() == index && item->amount > 0) return true;
+        if (item && item->GetInstance() == index && item->amount > 0) amount += item->amount;
     }
-    return false;
+    return amount;
+}
+
+static bool HasUnpackedItem(const char* name) {
+    return UnpackedAmount(name) > 0;
 }
 
 static Start Require(std::initializer_list<std::pair<std::optional<int>, int>> checks) {
@@ -313,10 +325,13 @@ static bool ClosedRule(QuestId quest, std::optional<int> flag) {
 // Tamora-specific start and closing conditions are defined beside the catalog.
 #include "tamora_rules.hpp"
 #include "albatros_rules.hpp"
+#include "departure_rules.hpp"
 
 static void RefreshQuests() {
     nextRefresh = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     verifiedBuild = IsVerifiedScriptBuild();
+    currentVisit = verifiedBuild && Value("KAPITEL") == 2 && CurrentLocation() == SelectedLocation();
+    progress = {};
     if (!verifiedBuild) return;
 
     const auto& catalog = SelectedCatalog();
@@ -346,6 +361,10 @@ static void RefreshQuests() {
                 facts.start = StartRule(id);
             }
             item.result = Evaluate(id, facts);
+        }
+        if (currentVisit) {
+            item.step = DepartureStep(i, facts, item.result.status);
+            progress.Add(item.step);
         }
     }
 }
@@ -474,6 +493,32 @@ static constexpr int questFilterCount = 7;
 static constexpr int rawFilterCount = 5;
 static constexpr int rawPageSize = 13;
 
+static const wchar_t* DepartureLabel(Step step) {
+    switch (step) {
+    case Step::Open: return L"Осталось";
+    case Step::Missed: return L"Пропущено";
+    case Step::Unknown: return L"Нужно проверить";
+    case Step::Done: return L"Этап завершён";
+    default: return L"Позже";
+    }
+}
+
+static constexpr Step departureFilters[] = {Step::Open, Step::Missed, Step::Unknown};
+
+static void PaintProgress() {
+    std::string line;
+    if (const auto percent = progress.Percent()) {
+        line = Russian(L"Визит: ") + std::to_string(*percent) + "% ("
+            + std::to_string(progress.completed) + "/" + std::to_string(progress.Total()) + ")";
+        line += Russian(L" | Осталось: ") + std::to_string(progress.remaining);
+    } else {
+        line = Russian(L"Нет данных для процента");
+    }
+    line += Russian(L" | Пропущено: ") + std::to_string(progress.missed);
+    line += Russian(L" | Неясно: ") + std::to_string(progress.unknown);
+    Text(3, FitText(line, rightEdge - leftX).c_str());
+}
+
 static void PaintQuests(int movement, bool toggleHints) {
     const auto& catalog = SelectedCatalog();
     const bool kondehra = SelectedLocation() == Location::Kondehra;
@@ -488,22 +533,30 @@ static void PaintQuests(int movement, bool toggleHints) {
         return;
     }
 
-    const auto chapter = Value("KAPITEL");
-    if (chapter != 2 || CurrentLocation() != SelectedLocation()) {
+    if (currentVisit) {
+        PaintProgress();
+    } else {
         Text(3, L"Вы сейчас вне выбранной локации или главы.");
-    } else if (beforeDeparture) {
-        Text(3, L"Проверьте оставшиеся дела. Звёздочкой отмечено продолжение в другой локации.");
+        if (beforeDeparture) return;
     }
 
     std::vector<std::size_t> visible;
     for (std::size_t i = 0; i < questItems.size(); ++i) {
-        const auto status = questItems[i].result.status;
-        if (beforeDeparture && !IncludeBeforeDeparture(status)) continue;
-        if (questFilter != 0 && static_cast<int>(status) + 1 != questFilter) continue;
+        const auto& item = questItems[i];
+        if (beforeDeparture) {
+            if (!OQIDeparture::NeedsReview(item.step)) continue;
+            if (questFilter != 0 && item.step != departureFilters[questFilter - 1]) continue;
+        } else if (questFilter != 0 && static_cast<int>(item.result.status) + 1 != questFilter) {
+            continue;
+        }
         visible.push_back(i);
     }
 
-    const wchar_t* filter = questFilter ? StatusText(static_cast<Status>(questFilter - 1)) : L"Все";
+    const wchar_t* filter = L"Все";
+    if (questFilter != 0) {
+        filter = beforeDeparture ? DepartureLabel(departureFilters[questFilter - 1])
+                                 : StatusText(static_cast<Status>(questFilter - 1));
+    }
     Text(4, (Russian(L"Фильтр: ") + Russian(filter)).c_str());
     if (visible.empty()) {
         revealedQuest.reset();
@@ -532,7 +585,7 @@ static void PaintQuests(int movement, bool toggleHints) {
         std::string title = i == selected ? "> " : "  ";
         title += item.title.empty() ? Russian(L"Название отсутствует") : item.title;
         if (catalog.entries[id].continuesBeyondIsland) title += " *";
-        const auto status = Russian(StatusText(item.result.status));
+        const auto status = Russian(beforeDeparture ? DepartureLabel(item.step) : StatusText(item.result.status));
         const int row = 5 + i - first;
         if (showHints) {
             const auto fittedStatus = FitText(status, (hintX - leftX) / 2);
@@ -642,7 +695,12 @@ static void Loop() {
         RefreshQuests();
     }
     if (departurePressed) { beforeDeparture = !beforeDeparture; questFilter = 0; selected = 0; revealedQuest.reset(); }
-    if (filterPressed) { questFilter = (questFilter + 1) % questFilterCount; selected = 0; revealedQuest.reset(); }
+    if (filterPressed) {
+        const int count = beforeDeparture ? 1 + static_cast<int>(std::size(departureFilters)) : questFilterCount;
+        questFilter = (questFilter + 1) % count;
+        selected = 0;
+        revealedQuest.reset();
+    }
     if (refreshPressed || std::chrono::steady_clock::now() >= nextRefresh) RefreshQuests();
     PaintQuests(movement, hintPressed && !locationPressed);
 }
@@ -660,6 +718,8 @@ public:
         questFilter = rawFilter = page = selected = 0;
         rawItems.clear();
         questItems.clear();
+        currentVisit = false;
+        progress = {};
         location.reset();
     }
     ~LoadScope() { loading = wasLoading; }

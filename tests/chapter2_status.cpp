@@ -1,6 +1,8 @@
 #include "../src/albatros.hpp"
+#include "../src/departure.hpp"
 #include "../src/tamora.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <initializer_list>
 #include <iterator>
@@ -15,6 +17,7 @@ static std::map<std::string, int> flags{{"KAPITEL", 2}, {"CURRENTLEVEL", 14}};
 static std::map<std::string, int> dialogs;
 static std::set<std::string> actors;
 static std::set<std::string> items;
+static std::map<std::string, int> quantities;
 
 static std::optional<int> Read(const std::map<std::string, int>& values, const char* name) {
     const auto it = values.find(name);
@@ -26,7 +29,10 @@ static std::optional<int> Value(const char* name) { return Read(flags, name); }
 static std::optional<int> Told(const char* name) { return Read(dialogs, name); }
 static bool OnAlbatros() { return Value("CURRENTLEVEL") == 16 || Value("CURRENTLEVEL") == 29; }
 static bool OnTamora() { return Value("CURRENTLEVEL") == 14; }
-static bool HasUnpackedItem(const char* name) { return items.count(name) != 0; }
+static int UnpackedAmount(const char* name) {
+    return Read(quantities, name).value_or(static_cast<int>(items.count(name)));
+}
+static bool HasUnpackedItem(const char* name) { return UnpackedAmount(name) > 0; }
 static bool FindLivingNpc(const char* name) { return actors.count(name) != 0; }
 static Start StartRule(QuestId) { return Start::Unknown; }
 
@@ -46,6 +52,11 @@ static Start WithNpc(Start ready, const char* name) {
 
 #include "../src/tamora_rules.hpp"
 #include "../src/albatros_rules.hpp"
+
+enum class Location { Albatros, Kondehra, Tamora };
+static Location chosenLocation = Location::Kondehra;
+static Location SelectedLocation() { return chosenLocation; }
+#include "../src/departure_rules.hpp"
 
 static void Check(bool condition) {
     if (!condition) std::abort();
@@ -143,7 +154,71 @@ static void TestAlbatros() {
     Check(Inspect(A::PirateGold, {0}).status == Status::Available);
 }
 
+static void TestDeparture() {
+    using namespace OQIDeparture;
+    namespace A = OQIAlbatros;
+    namespace T = OQITamora;
+    Progress progress;
+    progress.Add(Step::Deferred);
+    progress.Add(Step::Missed);
+    progress.Add(Step::Unknown);
+    Check(!progress.Percent());
+    Check(progress.missed == 1 && progress.unknown == 1);
+    progress.Add(Step::Done);
+    progress.Add(Step::Done);
+    progress.Add(Step::Open);
+    Check(progress.Percent() == 66 && progress.Total() == 3);
+    Check(NeedsReview(Step::Open) && NeedsReview(Step::Missed) && NeedsReview(Step::Unknown));
+    Check(!NeedsReview(Step::Deferred) && !NeedsReview(Step::Done));
+
+    flags.clear();
+    dialogs.clear();
+    actors.clear();
+    items.clear();
+    quantities.clear();
+
+    chosenLocation = Location::Kondehra;
+    Check(DepartureStep(Ring, {1}, Status::Running) == Step::Unknown);
+    flags["READ_OLDSTORY1"] = 0;
+    Check(DepartureStep(Ring, {1}, Status::Running) == Step::Open);
+    flags["READ_OLDSTORY1"] = 1;
+    Check(DepartureStep(Ring, {1}, Status::Running) == Step::Done);
+    actors.insert("MIL_8101_SANDROCK");
+    Check(DepartureStep(Rats, {0}, Status::Later) == Step::Open);
+    Check(DepartureStep(Rats, {3}, Status::Missed) == Step::Missed);
+    Check(DepartureStep(Provisions, {1}, Status::Running) == Step::Unknown);
+    quantities = {{"ITFO_BACON", 10}, {"ITFO_CHEESE", 10}, {"ITFO_TOMATE", 10},
+                  {"ITMI_MEHLSACK", 5}, {"ITMI_WEINFASS", 1}};
+    Check(DepartureStep(Provisions, {1}, Status::Running) == Step::Open);
+    flags["MIS_GESUNKENESSCHIFF"] = 2;
+    Check(DepartureStep(Island, {1}, Status::Running) == Step::Done);
+
+    chosenLocation = Location::Tamora;
+    Check(DepartureStep(T::Blade, {1}, Status::Running) == Step::Deferred);
+    Check(DepartureStep(T::Miners, {1}, Status::Running) == Step::Deferred);
+    flags["PIRATENFLOSS_TAMORA_ENTDECKT"] = 0;
+    Check(DepartureStep(T::Goblins, {1}, Status::Running) == Step::Open);
+    flags["PIRATENFLOSS_TAMORA_ENTDECKT"] = 1;
+    Check(DepartureStep(T::Goblins, {1}, Status::Running) == Step::Done);
+    flags = {{"MIS_WEGZUBRUNO", 2}, {"MIS_FULKO", 2}, {"MIS_ORKSOELDNERTAMORA", 2},
+             {"MIS_TAMORAMINEN", 2}, {"MIS_FLUCHFRIEDHOF", 2}};
+    Check(DepartureStep(T::Mission, {1}, Status::Running) == Step::Done);
+
+    chosenLocation = Location::Albatros;
+    flags = {{"CURRENTLEVEL", 29}, {"SEAWORLD_ZEN", 16}, {"SEAWORLD2_ZEN", 29},
+             {"SEAWORLD3_ZEN", 64}, {"SEAWORLDFIGHT_ZEN", 8}, {"MIS_KHORUSPROVIANT", 0}};
+    Check(DepartureStep(A::Merchant, {1}, Status::Running) == Step::Deferred);
+    Check(DepartureStep(A::Lookout, {0}, Status::Later) == Step::Deferred);
+    flags["MIS_KHORUSPROVIANT"] = 2;
+    Check(DepartureStep(A::Lookout, {0}, Status::Available) == Step::Open);
+    flags["CURRENTLEVEL"] = 8;
+    actors.insert("PAL_99002_GERNOT");
+    Check(DepartureStep(A::Lookout, {1}, Status::Running) == Step::Open);
+    Check(DepartureStep(A::Lookout, {2}, Status::Done) == Step::Done);
+}
+
 int main() {
     TestTamora();
     TestAlbatros();
+    TestDeparture();
 }

@@ -122,8 +122,4 @@ inline Result Evaluate(QuestId quest, const Facts& facts) {
     return Evaluate(facts, quest != Staff || facts.staffAccepted);
 }
 
-inline bool IncludeBeforeDeparture(Status status) {
-    return status != Status::Done;
-}
-
 }  // namespace OQIKondehra
