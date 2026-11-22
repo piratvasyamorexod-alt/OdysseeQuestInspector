@@ -23,6 +23,8 @@ git -C $template submodule update --init --recursive
 Check "Failed to fetch Union dependencies"
 Copy-Item (Join-Path $root "src/Plugin.ipp") (Join-Path $template "src/Plugin.ipp") -Force
 Copy-Item (Join-Path $root "src/kondehra.hpp") (Join-Path $template "src/kondehra.hpp") -Force
+Copy-Item (Join-Path $root "src/tamora.hpp") (Join-Path $template "src/tamora.hpp") -Force
+Copy-Item (Join-Path $root "src/tamora_rules.ipp") (Join-Path $template "src/tamora_rules.ipp") -Force
 Copy-Item (Join-Path $root "src/quest_manifest.hpp") (Join-Path $template "src/quest_manifest.hpp") -Force
 $cmake = Join-Path $template "CMakeLists.txt"
 $body = [IO.File]::ReadAllText($cmake)

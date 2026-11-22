@@ -22,6 +22,8 @@ struct Quest {
     const wchar_t* start;
     const wchar_t* finish;
     bool continuesBeyondIsland;
+    const wchar_t* chain = nullptr;
+    const wchar_t* caution = nullptr;
 };
 
 inline constexpr std::array<Quest, QuestCount> quests{{
@@ -85,7 +87,7 @@ struct Result {
     Evidence evidence;
 };
 
-inline Result Evaluate(QuestId quest, const Facts& facts) {
+inline Result Evaluate(const Facts& facts, bool flagOneMeansRunning = true) {
     // Every listed MIS symbol explicitly receives LOG_SUCCESS at a verified endpoint.
     if (facts.flag == 2 || facts.journal == Journal::Success) {
         if (facts.windowClosed || facts.journal == Journal::Failure || facts.flag == 3 || facts.flag == 4) {
@@ -103,7 +105,7 @@ inline Result Evaluate(QuestId quest, const Facts& facts) {
     if (facts.journal == Journal::Running) {
         return {Status::Running, Evidence::Journal};
     }
-    if (facts.flag == 1 && (quest != Staff || facts.staffAccepted)) {
+    if (facts.flag == 1 && flagOneMeansRunning) {
         return {Status::Running, Evidence::Script};
     }
     if (!facts.flag || facts.journal == Journal::Other) {
@@ -114,6 +116,10 @@ inline Result Evaluate(QuestId quest, const Facts& facts) {
     case Start::Later: return {Status::Later, Evidence::StartRule};
     default: return {Status::Unknown, Evidence::Insufficient};
     }
+}
+
+inline Result Evaluate(QuestId quest, const Facts& facts) {
+    return Evaluate(facts, quest != Staff || facts.staffAccepted);
 }
 
 inline bool IncludeBeforeDeparture(Status status) {
