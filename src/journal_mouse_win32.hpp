@@ -29,12 +29,18 @@ public:
         std::optional<POINT> position;
         bool pressed = false;
         int wheel = 0;
+        bool down = false;
     };
 
 private:
     static inline MouseEvents* active = nullptr;
     HWND window = nullptr;
     HHOOK hook = nullptr;
+    HHOOK windowHook = nullptr;
+    bool lostFocus = false;
+    bool lowLevelClick = false;
+    bool lowLevelWheel = false;
+    bool leftDown = false;
     State pending;
     int wheelDelta = 0;
     unsigned count = 0;
@@ -52,10 +58,43 @@ private:
                 ++mouse.count;
                 break;
             }
-            if (message == WM_LBUTTONDOWN) mouse.pending.pressed = true;
-            if (message == WM_MOUSEWHEEL) mouse.wheelDelta += static_cast<short>(HIWORD(input.mouseData));
+            if (message == WM_LBUTTONDOWN) {
+                mouse.lowLevelClick = mouse.leftDown = mouse.pending.pressed = true;
+            }
+            if (message == WM_LBUTTONUP) mouse.leftDown = false;
+            if (message == WM_MOUSEWHEEL) {
+                mouse.lowLevelWheel = true;
+                mouse.wheelDelta += static_cast<short>(HIWORD(input.mouseData));
+            }
         }
         return CallNextHookEx(nullptr, code, message, data);
+    }
+
+    static LRESULT CALLBACK ObserveWindow(int code, WPARAM sent, LPARAM data) {
+        if (code == HC_ACTION && active) {
+            const auto& message = *reinterpret_cast<const CWPSTRUCT*>(data);
+            auto& mouse = *active;
+            if (message.hwnd == mouse.window) {
+                if ((message.message == WM_ACTIVATEAPP && !message.wParam)
+                    || (message.message == WM_ACTIVATE && LOWORD(message.wParam) == WA_INACTIVE)) {
+                    mouse.lostFocus = true;
+                    mouse.Discard();
+                } else if ((message.message == WM_LBUTTONDOWN || message.message == WM_LBUTTONUP
+                            || message.message == WM_MOUSEWHEEL)
+                           && HasFocus(mouse.window)) {
+                    // Some input wrappers pass buttons directly to the game window.
+                    // Use those messages until the low-level hook sees each kind.
+                    if (!mouse.lowLevelClick && message.message == WM_LBUTTONDOWN) {
+                        mouse.leftDown = mouse.pending.pressed = true;
+                    }
+                    if (!mouse.lowLevelClick && message.message == WM_LBUTTONUP) mouse.leftDown = false;
+                    if (!mouse.lowLevelWheel && message.message == WM_MOUSEWHEEL) {
+                        mouse.wheelDelta += GET_WHEEL_DELTA_WPARAM(message.wParam);
+                    }
+                }
+            }
+        }
+        return CallNextHookEx(nullptr, code, sent, data);
     }
 
 public:
@@ -73,11 +112,15 @@ public:
         if (!hook) return false;
         window = game;
         active = this;
+        if (GetWindowThreadProcessId(window, nullptr) == GetCurrentThreadId()) {
+            windowHook = SetWindowsHookExW(WH_CALLWNDPROC, ObserveWindow, nullptr, GetCurrentThreadId());
+        }
         return true;
     }
 
     void Stop() {
         if (active == this) active = nullptr;
+        if (windowHook) UnhookWindowsHookEx(std::exchange(windowHook, nullptr));
         if (hook) UnhookWindowsHookEx(std::exchange(hook, nullptr));
         Discard();
     }
@@ -85,12 +128,16 @@ public:
     void Discard() {
         pending = {};
         wheelDelta = 0;
+        lowLevelClick = lowLevelWheel = false;
+        leftDown = false;
     }
 
     bool IsListening() const { return hook != nullptr; }
     unsigned Count() const { return count; }
+    bool TakeFocusLoss() { return std::exchange(lostFocus, false); }
 
     State Take() {
+        pending.down = leftDown;
         pending.wheel = wheelDelta / WHEEL_DELTA;
         wheelDelta -= pending.wheel * WHEEL_DELTA;
         return std::exchange(pending, State{});

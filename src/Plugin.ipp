@@ -445,7 +445,6 @@ class JournalView : public zCView {
 
     void RestoreEngineMouse() {
         systemPointer.Leave();
-        mouseEvents.Stop();
         if (std::exchange(restoreEngineMouse, false) && !zinput->GetDeviceEnabled(zINPUT_MOUSE)) {
             zinput->SetDeviceEnabled(zINPUT_MOUSE, TRUE);
             ApplyMouseAcquisition();
@@ -504,6 +503,7 @@ public:
     ~JournalView() override {
         SetEnableHandleEvent(FALSE);
         if (owner) owner->RemoveItem(this);
+        mouseEvents.Stop();
         RestoreEngineMouse();
         if (game.IsOnPause()) game.Unpause();
     }
@@ -513,34 +513,41 @@ public:
         hintScrollBar.reset();
         cursorPosition.reset();
         const auto window = OQIMouse::WindowRoot(hWndApp);
-        if (!OQIMouse::HasFocus(window)) {
+        const bool focused = OQIMouse::HasFocus(window);
+        if (mouseEvents.TakeFocusLoss() || !focused) {
             if (std::exchange(mouseHadFocus, false)) RestoreEngineMouse();
             mouseDown = false;
+            mouseEvents.Discard();
             listGrabOffset.reset();
             hintGrabOffset.reset();
-            return {};
         }
+        if (!focused) return {};
 
         RECT client{};
-        int width, height;
-        screen->GetPixelSize(width, height);
+        // GetPixelSize only writes its outputs for a view with an owner.
+        const int width = screen->psizex;
+        const int height = screen->psizey;
         if (width <= 0 || height <= 0 || !OQIMouse::ClientBounds(window, client)) return {};
 
         const bool regainedFocus = !std::exchange(mouseHadFocus, true);
         if (regainedFocus) {
-            restoreEngineMouse = zinput->GetDeviceEnabled(zINPUT_MOUSE) != 0;
-            if (restoreEngineMouse) zinput->SetDeviceEnabled(zINPUT_MOUSE, FALSE);
-            ApplyMouseAcquisition();
-            systemPointer.Enter(client, std::exchange(centerMouseOnOpen, false));
-            if (!mouseEvents.Start(window)) RestoreEngineMouse();
+            if (mouseEvents.IsListening() || mouseEvents.Start(window)) {
+                restoreEngineMouse = zinput->GetDeviceEnabled(zINPUT_MOUSE) != 0;
+                if (restoreEngineMouse) zinput->SetDeviceEnabled(zINPUT_MOUSE, FALSE);
+                ApplyMouseAcquisition();
+                systemPointer.Enter(client, std::exchange(centerMouseOnOpen, false));
+            }
         }
 
         const auto input = mouseEvents.Take();
         POINT desktop{};
-        if (input.position) desktop = *input.position;
-        else if (!GetCursorPos(&desktop)) return {};
+        if (!GetCursorPos(&desktop)) {
+            if (!input.position) return {};
+            desktop = *input.position;
+        }
+        if (!PtInRect(&client, desktop)) return {};
 
-        const bool down = WindowsKey(VK_LBUTTON)
+        const bool down = input.down || WindowsKey(VK_LBUTTON)
             || (!mouseEvents.IsListening() && zinput->GetMouseButtonPressedLeft() != 0);
         const bool wasDown = std::exchange(mouseDown, down);
         const bool pressed = !regainedFocus && (input.pressed || (!wasDown && (down || events.mouseClick)));
@@ -549,12 +556,12 @@ public:
             hintGrabOffset.reset();
         }
 
-        cursorX = MulDiv(desktop.x - client.left, width, client.right - client.left);
-        cursorY = MulDiv(desktop.y - client.top, height, client.bottom - client.top);
+        cursorX = (std::min)(width - 1, MulDiv(desktop.x - client.left, width, client.right - client.left));
+        cursorY = (std::min)(height - 1, MulDiv(desktop.y - client.top, height, client.bottom - client.top));
         CURSORINFO cursor{};
         cursor.cbSize = sizeof(cursor);
-        const bool visible = GetCursorInfo(&cursor) && (cursor.flags & CURSOR_SHOWING);
-        if (!visible && cursorX >= 0 && cursorX < width && cursorY >= 0 && cursorY < height) {
+        const bool visible = GetCursorInfo(&cursor) && (cursor.flags & CURSOR_SHOWING) && cursor.hCursor;
+        if (!visible) {
             cursorPosition = POINT{cursorX, cursorY};
         }
 
@@ -568,7 +575,7 @@ public:
 
     std::string MouseDiagnostics() const {
         char label[96];
-        std::snprintf(label, sizeof(label), "1.0.5  %s  X%d Y%d  P%u C%u W%u",
+        std::snprintf(label, sizeof(label), "1.0.6  %s  X%d Y%d  P%u C%u W%u",
                       mouseEvents.IsListening() ? "WIN" : "ZEN", cursorX, cursorY,
                       mouseEvents.Count(), mouseClicks, mouseWheelSteps);
         return label;
@@ -610,9 +617,7 @@ public:
             }
         }
         if (cursorPosition) {
-            int width, height;
-            screen->GetPixelSize(width, height);
-            const auto size = std::clamp(height / 42, 16, 48);
+            const auto size = std::clamp(screen->psizey / 42, 16, 48);
             DrawSprite(cursorView, cursorPosition->x, cursorPosition->y, size, size, 0xFFFFFFFF);
         }
         zrenderer->SetAlphaBlendSource(previousSource);
@@ -1146,7 +1151,7 @@ static void Loop() {
     journal->ClrPrintwin();
     const JournalLayout ui;
     const auto mouse = journal->ReadMouse(input);
-    const std::string status = diagnostics ? journal->MouseDiagnostics() : "1.0.5";
+    const std::string status = diagnostics ? journal->MouseDiagnostics() : "1.0.6";
     const int versionWidth = TextWidth(status);
     Text(ui.Right() - versionWidth, ui.footer + ui.line, status, versionWidth, Ink::Muted);
     const auto closeLabel = Russian(L"[ Закрыть ]");
@@ -1162,6 +1167,7 @@ static void Loop() {
         if (filterPressed) { rawFilter = (rawFilter + 1) % rawFilterCount; page = 0; }
         if (refreshPressed) RefreshRaw();
         page += input.locations + input.pages;
+        if (mouse.Over({ui.margin, ui.Y(5), ui.Right() - ui.margin, ui.rows * ui.line})) page -= mouse.wheel;
         PaintRaw(ui);
         return;
     }

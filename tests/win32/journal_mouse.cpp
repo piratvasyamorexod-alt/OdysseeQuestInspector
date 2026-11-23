@@ -59,6 +59,13 @@ int main() {
 
     OQIMouse::MouseEvents mouse;
     Check(mouse.Start(game), "Listen to Windows mouse input");
+    SendMessageW(game, WM_LBUTTONDOWN, MK_LBUTTON, 0);
+    SendMessageW(game, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA)), 0);
+    const auto direct = mouse.Take();
+    Check(direct.pressed && direct.down && direct.wheel == -1,
+          "Receive a click and scroll delivered to the game window");
+    SendMessageW(game, WM_LBUTTONUP, 0, 0);
+    Check(!mouse.Take().down, "Release the button in the window-message path");
     const auto before = mouse.Count();
     SendMouse(MOUSEEVENTF_MOVE, 15, 20);
     WaitForPackets(mouse, before + 1);
@@ -90,6 +97,19 @@ int main() {
     SendMouse(MOUSEEVENTF_WHEEL, 0, 0, WHEEL_DELTA);
     Pump();
     Check(mouse.Count() == beforeOutside && mouse.Take().wheel == 0, "Ignore mouse input in another window");
+
+    SetForegroundWindow(game);
+    Pump();
+    Check(OQIMouse::HasFocus(game) && mouse.TakeFocusLoss(), "Remember focus loss between frames");
+    Check(!mouse.TakeFocusLoss(), "Consume focus loss once");
+    const auto afterFocus = mouse.Count();
+    SendMouse(MOUSEEVENTF_LEFTDOWN);
+    WaitForPackets(mouse, afterFocus + 1);
+    const auto clicked = mouse.Take();
+    Check(clicked.pressed && clicked.down, "Accept a held click after focus returns");
+    SendMouse(MOUSEEVENTF_LEFTUP);
+    WaitForPackets(mouse, afterFocus + 2);
+    Check(!mouse.Take().down, "Release the button after focus returns");
 
     mouse.Stop();
     pointer.Leave();
