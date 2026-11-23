@@ -35,7 +35,7 @@ $body = [IO.File]::ReadAllText($cmake)
 $body = $body.Replace("project(UnionPlugin", "project(OdysseeQuestInspector")
 if ($body -notmatch "project\(OdysseeQuestInspector") { throw "Upstream CMake file changed" }
 [IO.File]::WriteAllText($cmake, $body)
-cmake -S $template -B $build -G "Visual Studio 17 2022" -A Win32 -DGOTHIC_API_G2A=ON
+cmake -S $template -B $build -G "Visual Studio 17 2022" -A Win32 -DGOTHIC_API_G2A=ON -DPROJECT_VERSION=1.0.1.0
 Check "CMake configure failed"
 cmake --build $build --config Release --parallel 2
 Check "C++ or VDF build failed"

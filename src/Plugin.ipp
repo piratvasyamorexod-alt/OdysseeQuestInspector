@@ -23,6 +23,7 @@ namespace OQI {
 using namespace OQIKondehra;
 
 static bool loading = false;
+static bool updatedFromInput = false;
 static bool verifiedBuild = false;
 static bool beforeDeparture = false;
 static bool diagnostics = false;
@@ -384,6 +385,8 @@ struct JournalInput {
     int locations = 0;
     int hintLines = 0;
     int hintPages = 0;
+    int mouseWheel = 0;
+    bool mouseClick = false;
     bool hint = false;
     bool close = false;
 };
@@ -526,7 +529,7 @@ class JournalView : public zCView {
     bool havePointer = false;
     enum class WheelSource { Engine, Window, Raw };
     WheelSource wheelSource = WheelSource::Engine;
-    bool windowsKeys[8]{};
+    bool windowsKeys[9]{};
 
     // Render these textures through the same engine path as the journal itself.
     static void DrawSprite(zCView& view, int x, int y, int width, int height, unsigned long ink) {
@@ -555,6 +558,7 @@ public:
     };
 
     JournalInput pending;
+    unsigned drawFrames = 0, inputPolls = 0, keyEvents = 0, pointerMoves = 0, clicks = 0, wheelSteps = 0;
     std::optional<ScrollBar> listScrollBar, hintScrollBar;
     std::optional<int> listGrabOffset, hintGrabOffset;
 
@@ -583,7 +587,7 @@ public:
         if (game.IsOnPause()) game.Unpause();
     }
 
-    JournalMouse ReadMouse() {
+    JournalMouse ReadMouse(const JournalInput& input) {
         listScrollBar.reset();
         hintScrollBar.reset();
         int screenWidth, screenHeight;
@@ -608,7 +612,10 @@ public:
         }
         const bool down = foreground && (WindowsKey(VK_LBUTTON) || zinput->GetMouseButtonPressedLeft() != 0);
         const bool clicked = std::exchange(mouseMessages.click, false);
-        const bool pressed = clicked || (cursorActive && down && !mouseDown);
+        const bool pressed = foreground && (clicked || input.mouseClick || (cursorActive && down && !mouseDown));
+        if (pressed) ++clicks;
+        const int oldX = static_cast<int>(cursorX);
+        const int oldY = static_cast<int>(cursorY);
 
         POINT pointer{};
         RECT client{};
@@ -644,7 +651,9 @@ public:
             wheelSource = source;
             if (source == WheelSource::Raw) wheelRemainder += static_cast<float>(rawWheel);
             else if (source == WheelSource::Window) wheelRemainder += static_cast<float>(queuedWheel);
-            else if (cursorActive) wheelRemainder += wheel;
+            else if (cursorActive) {
+                wheelRemainder += wheel != 0.0f ? wheel : static_cast<float>(input.mouseWheel * WHEEL_DELTA);
+            }
         }
         havePointer = foreground && gotPointer;
         lastPointer = pointer;
@@ -658,6 +667,8 @@ public:
         cursorY = std::clamp(cursorY, 0.0f, static_cast<float>(screenHeight - 1));
         const int notches = static_cast<int>(wheelRemainder / WHEEL_DELTA);
         wheelRemainder -= static_cast<float>(notches * WHEEL_DELTA);
+        if (static_cast<int>(cursorX) != oldX || static_cast<int>(cursorY) != oldY) ++pointerMoves;
+        if (notches) wheelSteps += static_cast<unsigned>(notches > 0 ? notches : -notches);
         int panelX, panelY;
         GetPixelPos(panelX, panelY);
         return {anx(static_cast<int>(cursorX) - panelX), any(static_cast<int>(cursorY) - panelY),
@@ -666,14 +677,14 @@ public:
 
     JournalInput TakeInput() {
         auto input = std::exchange(pending, JournalInput{});
-        constexpr int keys[] = {VK_ESCAPE, VK_RETURN, VK_UP, VK_DOWN, VK_PRIOR, VK_NEXT, VK_LEFT, VK_RIGHT};
+        constexpr int keys[] = {VK_ESCAPE, VK_RETURN, VK_UP, VK_DOWN, VK_PRIOR, VK_NEXT, VK_LEFT, VK_RIGHT, VK_OEM_7};
         const bool foreground = ForegroundGameWindow() != nullptr;
         bool pressed[std::size(keys)]{};
         for (std::size_t i = 0; i < std::size(keys); ++i) {
             const bool down = foreground && WindowsKey(keys[i]);
             pressed[i] = down && !std::exchange(windowsKeys[i], down);
         }
-        input.close = input.close || pressed[0];
+        input.close = input.close || pressed[0] || pressed[8];
         input.hint = input.hint || pressed[1];
         const int vertical = static_cast<int>(pressed[3]) - static_cast<int>(pressed[2]);
         const int pages = static_cast<int>(pressed[5]) - static_cast<int>(pressed[4]);
@@ -686,10 +697,13 @@ public:
             if (!input.pages && !input.hintPages) input.pages = pages;
         }
         if (!input.locations) input.locations = horizontal;
+        if (input.close || input.hint || input.selection || input.pages || input.locations
+            || input.hintLines || input.hintPages) ++keyEvents;
         return input;
     }
 
     void Blit() override {
+        ++drawFrames;
         const auto previousSource = zrenderer->GetAlphaBlendSource();
         zrenderer->SetAlphaBlendSource(zRND_ALPHA_SOURCE_MATERIAL);
         zCView::Blit();
@@ -704,6 +718,9 @@ public:
 
     int HandleEvent(int key) override {
         switch (key) {
+        case MOUSE_WHEELUP: ++pending.mouseWheel; return TRUE;
+        case MOUSE_WHEELDOWN: --pending.mouseWheel; return TRUE;
+        case MOUSE_BUTTONLEFT: pending.mouseClick = true; return TRUE;
         case KEY_ESCAPE: pending.close = true; return TRUE;
         case KEY_UP:
             if (ShiftDown()) --pending.hintLines;
@@ -1217,7 +1234,15 @@ static void Loop() {
     const bool refreshPressed = zinput->KeyToggled(KEY_R);
     journal->ClrPrintwin();
     const JournalLayout ui;
-    const auto mouse = journal->ReadMouse();
+    const auto mouse = journal->ReadMouse(input);
+    // Keep a visible identifier and counters so a screenshot can distinguish a stale DLL
+    // from failed input dispatch or a journal that stopped updating.
+    char status[104];
+    std::snprintf(status, sizeof(status), "1.0.1  F%u I%u K%u M%u C%u W%u",
+                  journal->drawFrames, journal->inputPolls, journal->keyEvents,
+                  journal->pointerMoves, journal->clicks, journal->wheelSteps);
+    const int statusWidth = TextWidth(status);
+    Text(ui.Right() - statusWidth, ui.footer + ui.line, status, statusWidth, Ink::Muted);
     if (JournalRect{0, 0, ui.width, ui.height}.Contains(mouse.x, mouse.y)) {
         Text(mouse.x, mouse.y - ui.line / 4, "+", ui.width - mouse.x, Ink::Paper);
     }
@@ -1275,6 +1300,7 @@ class LoadScope {
 public:
     LoadScope() {
         loading = true;
+        updatedFromInput = false;
         CloseJournal();
         verifiedBuild = false;
         beforeDeparture = false;
@@ -1291,13 +1317,26 @@ public:
 
 }  // namespace OQI
 
-// Refresh the journal before the renderer handles the paused world.
+// The stock game loop polls this entry point before rendering, even during a pause.
+void __cdecl OQI_GetInput();
+auto OQI_GetInputHook = Union::CreateHook(
+    reinterpret_cast<void*>(0x007A55C0), &OQI_GetInput, Union::HookType::Hook_Detours);
+
+void __cdecl OQI_GetInput() {
+    OQI_GetInputHook();
+    if (!OQI::journal) return;
+    ++OQI::journal->inputPolls;
+    OQI::Loop();
+    OQI::updatedFromInput = true;
+}
+
+// Keep the render path for opening and for renderers that bypass the stock poll.
 void __fastcall OQI_Render(oCGame*, void*);
 auto OQI_RenderHook = Union::CreateHook(
     SIGNATURE_OF(&oCGame::Render), &OQI_Render, Union::HookType::Hook_Detours);
 
 void __fastcall OQI_Render(oCGame* self, void* vtable) {
-    OQI::Loop();
+    if (!std::exchange(OQI::updatedFromInput, false)) OQI::Loop();
     OQI_RenderHook(self, vtable);
 }
 
