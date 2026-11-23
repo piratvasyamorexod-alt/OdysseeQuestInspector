@@ -407,16 +407,65 @@ static bool ShiftDown() {
     return zinput->KeyPressed(KEY_LSHIFT) || zinput->KeyPressed(KEY_RSHIFT);
 }
 
-// Observe the game's window messages without replacing its window procedure or input hooks.
+static HWND ForegroundGameWindow() {
+    const HWND foreground = GetForegroundWindow();
+    DWORD process = 0;
+    GetWindowThreadProcessId(foreground, &process);
+    return process == GetCurrentProcessId() ? foreground : nullptr;
+}
+
+static HWND JournalWindow() {
+    const HWND foreground = ForegroundGameWindow();
+    return GetAncestor(foreground ? foreground : hWndApp, GA_ROOT);
+}
+
+static bool WindowsKey(int key) {
+    return (GetAsyncKeyState(key) & 0x8000) != 0;
+}
+
 class JournalMouseMessages {
     static inline JournalMouseMessages* active = nullptr;
+    static constexpr USHORT desktopPage = 1, mouseUsage = 2;
     HHOOK hook = nullptr;
     HWND window;
+    HWND rawTarget = nullptr;
+    bool ownsRegistration = false;
+
+    static bool ReadRegistrations(std::vector<RAWINPUTDEVICE>& devices) {
+        UINT count = 0;
+        if (GetRegisteredRawInputDevices(nullptr, &count, sizeof(RAWINPUTDEVICE)) != 0) return false;
+        devices.resize(count);
+        return !count || GetRegisteredRawInputDevices(devices.data(), &count, sizeof(RAWINPUTDEVICE)) == count;
+    }
+
+    static bool IsMouseRegistration(const RAWINPUTDEVICE& device) {
+        return device.usUsagePage == desktopPage
+            && (device.usUsage == mouseUsage || (device.usUsage == 0 && (device.dwFlags & RIDEV_PAGEONLY)));
+    }
+
+    void ObserveRawMouse(LPARAM param) {
+        RAWINPUT input{};
+        UINT size = sizeof(input);
+        if (GetRawInputData(reinterpret_cast<HRAWINPUT>(param), RID_INPUT, &input,
+                           &size, sizeof(RAWINPUTHEADER)) == UINT(-1) || input.header.dwType != RIM_TYPEMOUSE) return;
+        const auto& mouse = input.data.mouse;
+        if (!(mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
+            dx += mouse.lLastX;
+            dy += mouse.lLastY;
+        }
+        if (mouse.usButtonFlags & RI_MOUSE_WHEEL) rawWheel += static_cast<short>(mouse.usButtonData);
+        if (mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN) click = true;
+    }
 
     static LRESULT CALLBACK Observe(int code, WPARAM removed, LPARAM param) {
         if (code >= 0 && removed == PM_REMOVE && active) {
             const auto& msg = *reinterpret_cast<const MSG*>(param);
-            if (msg.hwnd && GetAncestor(msg.hwnd, GA_ROOT) == active->window) {
+            const bool inWindow = msg.hwnd && GetAncestor(msg.hwnd, GA_ROOT) == active->window;
+            if (msg.message == WM_INPUT && (inWindow || (active->rawTarget && msg.hwnd == active->rawTarget))
+                && GET_RAWINPUT_CODE_WPARAM(msg.wParam) == RIM_INPUT) {
+                active->ObserveRawMouse(msg.lParam);
+            }
+            if (inWindow) {
                 switch (msg.message) {
                 case WM_MOUSEWHEEL: active->wheel += static_cast<short>(HIWORD(msg.wParam)); break;
                 case WM_LBUTTONDOWN:
@@ -428,29 +477,41 @@ class JournalMouseMessages {
     }
 
 public:
-    int wheel = 0;
+    int wheel = 0, rawWheel = 0;
+    long dx = 0, dy = 0;
     bool click = false;
 
     explicit JournalMouseMessages(HWND gameWindow) : window(gameWindow) {
-        if (window) {
-            active = this;
-            hook = SetWindowsHookExW(WH_GETMESSAGE, Observe, nullptr, GetCurrentThreadId());
+        if (!window) return;
+        active = this;
+        hook = SetWindowsHookExW(WH_GETMESSAGE, Observe, nullptr, GetCurrentThreadId());
+        if (!hook) return;
+
+        std::vector<RAWINPUTDEVICE> devices;
+        if (!ReadRegistrations(devices)) return;
+        const auto mouse = std::find_if(devices.begin(), devices.end(), IsMouseRegistration);
+        if (mouse != devices.end()) {
+            rawTarget = mouse->hwndTarget;
+            return;
         }
+        // Only register while the journal is open, and preserve any wrapper's registration.
+        const RAWINPUTDEVICE device{desktopPage, mouseUsage, 0, window};
+        ownsRegistration = RegisterRawInputDevices(&device, 1, sizeof(device)) != 0;
     }
 
     ~JournalMouseMessages() {
         active = nullptr;
         if (hook) UnhookWindowsHookEx(hook);
+        if (!ownsRegistration) return;
+        std::vector<RAWINPUTDEVICE> devices;
+        if (ReadRegistrations(devices) && std::any_of(devices.begin(), devices.end(), [this](const auto& device) {
+            return IsMouseRegistration(device) && device.hwndTarget == window && device.dwFlags == 0;
+        })) {
+            const RAWINPUTDEVICE device{desktopPage, mouseUsage, RIDEV_REMOVE, nullptr};
+            RegisterRawInputDevices(&device, 1, sizeof(device));
+        }
     }
 };
-
-static HWND JournalWindow() {
-    const HWND foreground = GetForegroundWindow();
-    DWORD process = 0;
-    GetWindowThreadProcessId(foreground, &process);
-    return process == GetCurrentProcessId() ? GetAncestor(foreground, GA_ROOT)
-                                             : GetAncestor(hWndApp, GA_ROOT);
-}
 
 class JournalView : public zCView {
     oCGame& game;
@@ -463,7 +524,9 @@ class JournalView : public zCView {
     zCView scrollView{0, 0, 8, 8};
     POINT lastPointer{};
     bool havePointer = false;
-    bool windowWheel = false;
+    enum class WheelSource { Engine, Window, Raw };
+    WheelSource wheelSource = WheelSource::Engine;
+    bool windowsKeys[8]{};
 
     // Render these textures through the same engine path as the journal itself.
     static void DrawSprite(zCView& view, int x, int y, int width, int height, unsigned long ink) {
@@ -483,22 +546,6 @@ class JournalView : public zCView {
         DrawSprite(scrollView, x + nax(rect.x), y + nay(rect.y),
                    nax(rect.x + rect.width) - nax(rect.x),
                    nay(rect.y + rect.height) - nay(rect.y), ink);
-    }
-
-    void DrawCursor() {
-        const int x = static_cast<int>(cursorX);
-        const int y = static_cast<int>(cursorY);
-        // Opaque strips share the working scrollbar texture and keep the pointer visible
-        // even when a renderer ignores alpha in a dedicated cursor texture.
-        constexpr int tipWidths[] = {2, 4, 6, 8, 10, 12, 14, 8};
-        for (int row = 0; row < static_cast<int>(std::size(tipWidths)); ++row) {
-            DrawSprite(scrollView, x, y + row * 2, tipWidths[row] + 2, 4, 0xFF271B10);
-        }
-        DrawSprite(scrollView, x + 5, y + 14, 6, 8, 0xFF271B10);
-        for (int row = 0; row < static_cast<int>(std::size(tipWidths)); ++row) {
-            DrawSprite(scrollView, x + 1, y + 1 + row * 2, tipWidths[row], 2, 0xFFFFE3B3);
-        }
-        DrawSprite(scrollView, x + 6, y + 15, 4, 6, 0xFFFFE3B3);
     }
 
 public:
@@ -526,6 +573,7 @@ public:
         screen->InsertItem(this);
         SetEnableHandleEvent(TRUE);
         SetHandleEventTop();
+        TakeInput();
     }
 
     ~JournalView() override {
@@ -547,21 +595,18 @@ public:
             cursorStarted = true;
         }
 
-        DWORD foregroundProcess = 0;
-        GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcess);
-        if (foregroundProcess != GetCurrentProcessId()) {
+        const bool foreground = ForegroundGameWindow() != nullptr;
+        if (!foreground) {
             cursorActive = false;
             havePointer = false;
             wheelRemainder = 0.0f;
-            mouseMessages.wheel = 0;
+            mouseMessages.wheel = mouseMessages.rawWheel = 0;
+            mouseMessages.dx = mouseMessages.dy = 0;
             mouseMessages.click = false;
             listGrabOffset.reset();
             hintGrabOffset.reset();
-            return {};
         }
-
-        const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0
-            || zinput->GetMouseButtonPressedLeft() != 0;
+        const bool down = foreground && (WindowsKey(VK_LBUTTON) || zinput->GetMouseButtonPressedLeft() != 0);
         const bool clicked = std::exchange(mouseMessages.click, false);
         const bool pressed = clicked || (cursorActive && down && !mouseDown);
 
@@ -573,29 +618,37 @@ public:
         const bool pointerMoved = gotPointer && havePointer
             && (pointer.x != lastPointer.x || pointer.y != lastPointer.y);
 
-        if (cursorActive) {
+        const long rawX = std::exchange(mouseMessages.dx, 0);
+        const long rawY = std::exchange(mouseMessages.dy, 0);
+        const int queuedWheel = std::exchange(mouseMessages.wheel, 0);
+        const int rawWheel = std::exchange(mouseMessages.rawWheel, 0);
+        if (foreground) {
             float dx = 0.0f, dy = 0.0f, wheel = 0.0f;
             int flipX = FALSE, flipY = FALSE;
             zinput->GetMousePos(dx, dy, wheel);
             zinput->GetMouseFlipXY(flipX, flipY);
-            if (gotPointer && (pointerMoved || clicked) && pointer.x >= 0 && pointer.x < client.right
+            if (gotPointer && (pointerMoved || clicked || !havePointer) && pointer.x >= 0 && pointer.x < client.right
                 && pointer.y >= 0 && pointer.y < client.bottom) {
                 cursorX = static_cast<float>(pointer.x) * screenWidth / client.right;
                 cursorY = static_cast<float>(pointer.y) * screenHeight / client.bottom;
-            } else {
+            } else if (cursorActive && (rawX || rawY)) {
+                cursorX += static_cast<float>(rawX);
+                cursorY += static_cast<float>(rawY);
+            } else if (cursorActive) {
                 cursorX += flipX ? -dx : dx;
                 cursorY += flipY ? -dy : dy;
             }
-            const int queuedWheel = std::exchange(mouseMessages.wheel, 0);
-            if (queuedWheel && !windowWheel) {
-                windowWheel = true;
-                wheelRemainder = 0.0f;
-            }
-            wheelRemainder += windowWheel ? static_cast<float>(queuedWheel) : wheel;
+            const auto source = rawWheel ? WheelSource::Raw :
+                queuedWheel && wheelSource == WheelSource::Engine ? WheelSource::Window : wheelSource;
+            if (source != wheelSource) wheelRemainder = 0.0f;
+            wheelSource = source;
+            if (source == WheelSource::Raw) wheelRemainder += static_cast<float>(rawWheel);
+            else if (source == WheelSource::Window) wheelRemainder += static_cast<float>(queuedWheel);
+            else if (cursorActive) wheelRemainder += wheel;
         }
-        havePointer = gotPointer;
+        havePointer = foreground && gotPointer;
         lastPointer = pointer;
-        cursorActive = true;
+        cursorActive = foreground;
         mouseDown = down;
         if (!down) {
             listGrabOffset.reset();
@@ -608,7 +661,32 @@ public:
         int panelX, panelY;
         GetPixelPos(panelX, panelY);
         return {anx(static_cast<int>(cursorX) - panelX), any(static_cast<int>(cursorY) - panelY),
-                notches, true, pressed};
+                notches, foreground, pressed};
+    }
+
+    JournalInput TakeInput() {
+        auto input = std::exchange(pending, JournalInput{});
+        constexpr int keys[] = {VK_ESCAPE, VK_RETURN, VK_UP, VK_DOWN, VK_PRIOR, VK_NEXT, VK_LEFT, VK_RIGHT};
+        const bool foreground = ForegroundGameWindow() != nullptr;
+        bool pressed[std::size(keys)]{};
+        for (std::size_t i = 0; i < std::size(keys); ++i) {
+            const bool down = foreground && WindowsKey(keys[i]);
+            pressed[i] = down && !std::exchange(windowsKeys[i], down);
+        }
+        input.close = input.close || pressed[0];
+        input.hint = input.hint || pressed[1];
+        const int vertical = static_cast<int>(pressed[3]) - static_cast<int>(pressed[2]);
+        const int pages = static_cast<int>(pressed[5]) - static_cast<int>(pressed[4]);
+        const int horizontal = static_cast<int>(pressed[7]) - static_cast<int>(pressed[6]);
+        if (foreground && WindowsKey(VK_SHIFT)) {
+            if (!input.hintLines && !input.selection) input.hintLines = vertical;
+            if (!input.hintPages && !input.pages) input.hintPages = pages;
+        } else {
+            if (!input.selection && !input.hintLines) input.selection = vertical;
+            if (!input.pages && !input.hintPages) input.pages = pages;
+        }
+        if (!input.locations) input.locations = horizontal;
+        return input;
     }
 
     void Blit() override {
@@ -621,7 +699,6 @@ public:
                 DrawScrollRect((*bar)->thumb, (*bar)->highlighted ? 0xFFFFD9A1 : 0xFFC7A46C);
             }
         }
-        if (cursorStarted) DrawCursor();
         zrenderer->SetAlphaBlendSource(previousSource);
     }
 
@@ -1110,7 +1187,7 @@ static void Loop() {
         return;
     }
 
-    if (journal && (toggle || journal->pending.close)) {
+    if (journal && toggle) {
         CloseJournal();
         return;
     }
@@ -1122,7 +1199,11 @@ static void Loop() {
         else RefreshQuests();
     }
 
-    auto input = std::exchange(journal->pending, JournalInput{});
+    auto input = journal->TakeInput();
+    if (input.close) {
+        CloseJournal();
+        return;
+    }
     input.hint = input.hint || hintPressed;
     if (diagnosticPressed) {
         diagnostics = !diagnostics;
@@ -1137,6 +1218,9 @@ static void Loop() {
     journal->ClrPrintwin();
     const JournalLayout ui;
     const auto mouse = journal->ReadMouse();
+    if (JournalRect{0, 0, ui.width, ui.height}.Contains(mouse.x, mouse.y)) {
+        Text(mouse.x, mouse.y - ui.line / 4, "+", ui.width - mouse.x, Ink::Paper);
+    }
     const auto closeLabel = Russian(L"[ Закрыть ]");
     const int closeWidth = TextWidth(closeLabel);
     const JournalRect closeButton{ui.Right() - closeWidth, ui.Y(0), closeWidth, ui.line};
