@@ -2,6 +2,20 @@
 #include <cstdio>
 #include <cstdlib>
 
+static constexpr wchar_t gameClass[] = L"JournalMouseTestWindow";
+static unsigned cursorMessages = 0;
+static unsigned buttonMessages = 0;
+
+static LRESULT CALLBACK GameWindow(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_SETCURSOR && LOWORD(lp) == HTCLIENT) {
+        ++cursorMessages;
+        SetCursor(nullptr);
+        return TRUE;
+    }
+    if (message == WM_LBUTTONDOWN || message == WM_MOUSEWHEEL) ++buttonMessages;
+    return DefWindowProcW(window, message, wp, lp);
+}
+
 static void Check(bool condition, const char* description) {
     if (condition) return;
     std::fprintf(stderr, "%s (Win32 error %lu)\n", description, GetLastError());
@@ -26,19 +40,24 @@ static void SendMouse(DWORD flags, LONG x = 0, LONG y = 0, DWORD data = 0) {
     Check(SendInput(1, &input, sizeof(input)) == 1, "Send Windows mouse input");
 }
 
-static void WaitForPackets(const OQIMouse::MouseEvents& mouse, unsigned expected) {
+static void WaitForPackets(const OQIMouse::MouseEvents& mouse, unsigned expected, bool pumpWindow = true) {
     const auto deadline = GetTickCount64() + 2000;
     do {
-        Pump();
+        if (pumpWindow) Pump();
         if (mouse.Count() >= expected) return;
-        MsgWaitForMultipleObjects(0, nullptr, FALSE, 20, QS_ALLINPUT);
+        Sleep(5);
     } while (GetTickCount64() < deadline);
-    Check(false, "Receive Windows mouse events while pumping the same thread as the game");
+    Check(false, "Receive Windows mouse events on the independent input thread");
 }
 
 int main() {
     auto instance = GetModuleHandleW(nullptr);
-    HWND game = CreateWindowExW(WS_EX_TOPMOST, L"STATIC", L"Journal mouse test", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+    WNDCLASSW windowClass{};
+    windowClass.lpfnWndProc = GameWindow;
+    windowClass.hInstance = instance;
+    windowClass.lpszClassName = gameClass;
+    Check(RegisterClassW(&windowClass) != 0, "Register the simulated game window");
+    HWND game = CreateWindowExW(WS_EX_TOPMOST, gameClass, L"Journal mouse test", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                 40, 40, 500, 350, nullptr, nullptr, instance, nullptr);
     Check(game != nullptr, "Create an interactive game window");
     SetForegroundWindow(game);
@@ -52,23 +71,33 @@ int main() {
     const POINT start{client.left + (client.right - client.left) / 2,
                       client.top + (client.bottom - client.top) / 2};
     OQIMouse::JournalPointer pointer;
-    pointer.Enter(client, true);
+    pointer.Enter(game, client, true);
     POINT current{};
     Check(GetCursorPos(&current) && current.x == start.x && current.y == start.y,
           "Center the cursor in the focused client area");
+    const auto beforeCursor = cursorMessages;
+    SendMessageW(game, WM_SETCURSOR, reinterpret_cast<WPARAM>(game), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    CURSORINFO cursor{};
+    cursor.cbSize = sizeof(cursor);
+    Check(cursorMessages == beforeCursor && GetCursorInfo(&cursor)
+              && (cursor.flags & CURSOR_SHOWING) && cursor.hCursor,
+          "Keep the system pointer visible when the game would hide it");
 
     OQIMouse::MouseEvents mouse;
     Check(mouse.Start(game), "Listen to Windows mouse input");
+    const auto beforeButtons = buttonMessages;
     SendMessageW(game, WM_LBUTTONDOWN, MK_LBUTTON, 0);
     SendMessageW(game, WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA)), 0);
     const auto direct = mouse.Take();
     Check(direct.pressed && direct.down && direct.wheel == -1,
           "Receive a click and scroll delivered to the game window");
+    Check(buttonMessages == beforeButtons + 2, "Forward regular mouse messages to the game");
     SendMessageW(game, WM_LBUTTONUP, 0, 0);
     Check(!mouse.Take().down, "Release the button in the window-message path");
     const auto before = mouse.Count();
-    SendMouse(MOUSEEVENTF_MOVE, 15, 20);
-    WaitForPackets(mouse, before + 1);
+    std::thread input([] { SendMouse(MOUSEEVENTF_MOVE, 15, 20); });
+    WaitForPackets(mouse, before + 1, false);
+    input.join();
     const auto motion = mouse.Take();
     Check(motion.position && motion.position->x > start.x && motion.position->y > start.y,
           "Receive cursor movement in desktop coordinates");
@@ -113,6 +142,9 @@ int main() {
 
     mouse.Stop();
     pointer.Leave();
+    const auto beforeRestore = cursorMessages;
+    SendMessageW(game, WM_SETCURSOR, reinterpret_cast<WPARAM>(game), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    Check(cursorMessages == beforeRestore + 1, "Return cursor control to the game on close");
     RECT restored{};
     Check(GetClipCursor(&restored) && EqualRect(&restored, &original), "Restore the prior cursor clip");
     DestroyWindow(other);
