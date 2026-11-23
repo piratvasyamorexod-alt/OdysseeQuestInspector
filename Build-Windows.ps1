@@ -27,13 +27,13 @@ foreach ($source in $sources) {
 }
 $textureDir = Join-Path $template "vdf/_Work/Data/Textures/_Compiled"
 New-Item -ItemType Directory -Force -Path $textureDir | Out-Null
-foreach ($texture in @("OQI_JOURNAL-C.TEX", "OQI_SCROLL-C.TEX")) {
+foreach ($texture in @("OQI_JOURNAL-C.TEX", "OQI_SCROLL-C.TEX", "OQI_CURSOR-C.TEX")) {
   Copy-Item (Join-Path $root "textures/$texture") $textureDir -Force
 }
 $cmake = Join-Path $template "CMakeLists.txt"
 $body = [IO.File]::ReadAllText($cmake)
 $body = $body.Replace("project(UnionPlugin", "project(OdysseeQuestInspector")
-$body = $body.Replace('VERSION ${PROJECT_VERSION}', 'VERSION 1.0.2.0')
+$body = $body.Replace('VERSION ${PROJECT_VERSION}', 'VERSION 1.0.3.0')
 if ($body -notmatch "project\(OdysseeQuestInspector") { throw "Upstream CMake file changed" }
 [IO.File]::WriteAllText($cmake, $body)
 cmake -S $template -B $build -G "Visual Studio 17 2022" -A Win32 -DGOTHIC_API_G2A=ON

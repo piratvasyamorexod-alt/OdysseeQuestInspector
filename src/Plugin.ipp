@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <commctrl.h>
 #include <cstdio>
 #include <cstdint>
 #include <initializer_list>
@@ -17,8 +16,6 @@
 #include "kondehra.hpp"
 #include "quest_manifest.hpp"
 #include "tamora.hpp"
-
-#pragma comment(lib, "comctl32.lib")
 
 namespace GOTHIC_NAMESPACE {
 namespace OQI {
@@ -388,6 +385,8 @@ struct JournalInput {
     int locations = 0;
     int hintLines = 0;
     int hintPages = 0;
+    int mouseWheel = 0;
+    bool mouseClick = false;
     bool hint = false;
     bool close = false;
 };
@@ -422,148 +421,15 @@ static bool WindowsKey(int key) {
     return (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
-class JournalMouseInput {
-    static constexpr UINT_PTR subclassId = 1;
-    HWND window = nullptr;
-    zCInput& input;
-    bool restoreMouse = false;
-    bool captured = false;
-    HCURSOR arrow = nullptr;
-    int cursorShowCalls = 0;
-    bool centerOnOpen = true;
-    bool down = false;
-    bool pressed = false;
-    int wheelDelta = 0;
-
-    static void ApplyMouseAcquisition() {
-        // Gothic II 2.6 fix: SetAcquireMouse applies the current zINPUT_MOUSE flag
-        // to the DirectInput device. SetDeviceEnabled alone only changes the flag.
-        reinterpret_cast<int(__cdecl*)()>(0x004D3D30)();
-    }
-
-    bool HasFocus() const {
-        return window && GetAncestor(GetForegroundWindow(), GA_ROOT) == window;
-    }
-
-    void ReleaseDrag() {
-        if (std::exchange(captured, false) && GetCapture() == window) ReleaseCapture();
-        down = false;
-    }
-
-    void LeaveWindow() {
-        ReleaseDrag();
-        pressed = false;
-        wheelDelta = 0;
-        while (cursorShowCalls > 0) {
-            ShowCursor(FALSE);
-            --cursorShowCalls;
-        }
-    }
-
-    static LRESULT CALLBACK HandleMessage(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
-                                         UINT_PTR id, DWORD_PTR ref) {
-        auto& mouse = *reinterpret_cast<JournalMouseInput*>(ref);
-        switch (message) {
-        case WM_NCDESTROY:
-            RemoveWindowSubclass(window, HandleMessage, id);
-            mouse.LeaveWindow();
-            mouse.window = nullptr;
-            break;
-        case WM_ACTIVATEAPP:
-            if (!wparam) mouse.LeaveWindow();
-            break;
-        case WM_CANCELMODE:
-            mouse.ReleaseDrag();
-            mouse.pressed = false;
-            break;
-        case WM_CAPTURECHANGED:
-            mouse.captured = false;
-            mouse.down = false;
-            break;
-        }
-        if (mouse.HasFocus()) {
-            switch (message) {
-            case WM_SETCURSOR:
-                if (LOWORD(lparam) == HTCLIENT && mouse.arrow) {
-                    SetCursor(mouse.arrow);
-                    return TRUE;
-                }
-                break;
-            case WM_LBUTTONDOWN:
-            case WM_LBUTTONDBLCLK:
-                mouse.down = mouse.pressed = true;
-                if (!GetCapture()) {
-                    SetCapture(window);
-                    mouse.captured = GetCapture() == window;
-                }
-                return 0;
-            case WM_LBUTTONUP:
-                mouse.ReleaseDrag();
-                return 0;
-            case WM_MOUSEWHEEL:
-                mouse.wheelDelta += GET_WHEEL_DELTA_WPARAM(wparam);
-                return 0;
-            }
-        }
-        return DefSubclassProc(window, message, wparam, lparam);
-    }
-
-public:
-    explicit JournalMouseInput(zCInput& input) : input(input) {
-        const auto foreground = ForegroundGameWindow();
-        const auto target = GetAncestor(foreground ? foreground : hWndApp, GA_ROOT);
-        if (!target || GetWindowThreadProcessId(target, nullptr) != GetCurrentThreadId()
-            || !SetWindowSubclass(target, HandleMessage, subclassId, reinterpret_cast<DWORD_PTR>(this))) return;
-        window = target;
-        arrow = LoadCursor(nullptr, IDC_ARROW);
-        restoreMouse = input.GetDeviceEnabled(zINPUT_MOUSE) != 0;
-        if (restoreMouse) input.SetDeviceEnabled(zINPUT_MOUSE, FALSE);
-        ApplyMouseAcquisition();
-    }
-
-    ~JournalMouseInput() {
-        if (window) {
-            RemoveWindowSubclass(window, HandleMessage, subclassId);
-            LeaveWindow();
-        }
-        if (restoreMouse && !input.GetDeviceEnabled(zINPUT_MOUSE)) {
-            input.SetDeviceEnabled(zINPUT_MOUSE, TRUE);
-            ApplyMouseAcquisition();
-        }
-    }
-
-    JournalMouse Read(int screenWidth, int screenHeight) {
-        if (!HasFocus()) {
-            LeaveWindow();
-            return {};
-        }
-        RECT client{};
-        if (!GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0) return {};
-        if (std::exchange(centerOnOpen, false)) {
-            POINT center{client.right / 2, client.bottom / 2};
-            if (ClientToScreen(window, &center)) SetCursorPos(center.x, center.y);
-        }
-        if (!cursorShowCalls && arrow) {
-            do {
-                ++cursorShowCalls;
-            } while (ShowCursor(TRUE) < 0);
-            SetCursor(arrow);
-        }
-        POINT pointer{};
-        if (!GetCursorPos(&pointer) || !ScreenToClient(window, &pointer)) return {};
-        const int wheel = wheelDelta / WHEEL_DELTA;
-        wheelDelta -= wheel * WHEEL_DELTA;
-        return {MulDiv(pointer.x, screenWidth, client.right), MulDiv(pointer.y, screenHeight, client.bottom),
-                wheel, true, std::exchange(pressed, false)};
-    }
-
-    bool IsDown() const { return down; }
-};
-
 class JournalView : public zCView {
     oCGame& game;
-    std::optional<JournalMouseInput> mouseInput;
     zCView scrollView{0, 0, 8, 8};
+    zCView cursorView{0, 0, 8, 8};
+    std::optional<POINT> cursorPosition;
+    POINT lastDesktopPosition{};
+    float cursorX = 0.0f, cursorY = 0.0f;
+    bool mouseHadFocus = false;
+    bool mouseDown = false;
     bool windowsKeys[9]{};
 
     // Render these textures through the same engine path as the journal itself.
@@ -604,9 +470,11 @@ public:
         scrollView.InsertBack(zSTRING("OQI_SCROLL.TGA"));
         scrollView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
         scrollView.SetTransparency(255);
+        cursorView.InsertBack(zSTRING("OQI_CURSOR.TGA"));
+        cursorView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
+        cursorView.SetTransparency(255);
         // Use the engine pause with its built-in message suppressed.
         game.Pause();
-        mouseInput.emplace(*zinput);
         screen->InsertItem(this);
         SetEnableHandleEvent(TRUE);
         SetHandleEventTop();
@@ -616,28 +484,66 @@ public:
     ~JournalView() override {
         SetEnableHandleEvent(FALSE);
         if (owner) owner->RemoveItem(this);
-        mouseInput.reset();
         if (game.IsOnPause()) game.Unpause();
     }
 
-    JournalMouse ReadMouse() {
+    JournalMouse ReadMouse(const JournalInput& events) {
         listScrollBar.reset();
         hintScrollBar.reset();
+        cursorPosition.reset();
+        const auto window = GetAncestor(hWndApp, GA_ROOT);
+        if (!window || GetAncestor(ForegroundGameWindow(), GA_ROOT) != window) {
+            mouseHadFocus = mouseDown = false;
+            listGrabOffset.reset();
+            hintGrabOffset.reset();
+            return {};
+        }
+        RECT client{};
         int width, height;
         screen->GetPixelSize(width, height);
-        if (width <= 0 || height <= 0) return {};
-        auto mouse = mouseInput->Read(width, height);
-        if (!mouse.active || !mouseInput->IsDown()) {
+        POINT desktop{};
+        if (!GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0
+            || width <= 0 || height <= 0) return {};
+        const bool gotDesktop = GetCursorPos(&desktop) != 0;
+        POINT clientPoint = desktop;
+        const bool pointerAvailable = gotDesktop && ScreenToClient(window, &clientPoint);
+        const bool regainedFocus = !std::exchange(mouseHadFocus, true);
+        // Sample the same ZenGin mouse state the inventory uses. Wrappers can update
+        // it without sending a Windows button or wheel message to the game window.
+        const bool down = zinput->GetMouseButtonPressedLeft() != 0 || WindowsKey(VK_LBUTTON);
+        const bool wasDown = std::exchange(mouseDown, down);
+        const bool pressed = !regainedFocus && !wasDown && (down || events.mouseClick);
+        if (!down || regainedFocus) {
             listGrabOffset.reset();
             hintGrabOffset.reset();
         }
-        if (mouse.active) {
-            int x, y;
-            GetPixelPos(x, y);
-            mouse.x = anx(mouse.x - x);
-            mouse.y = any(mouse.y - y);
+
+        const bool movedOnDesktop = desktop.x != lastDesktopPosition.x || desktop.y != lastDesktopPosition.y;
+        if (pointerAvailable && (regainedFocus || movedOnDesktop)) {
+            cursorX = static_cast<float>(clientPoint.x) * width / client.right;
+            cursorY = static_cast<float>(clientPoint.y) * height / client.bottom;
+        } else if (regainedFocus) {
+            cursorX = width * 0.5f;
+            cursorY = height * 0.5f;
+        } else {
+            // Stock exclusive DirectInput can leave the desktop position fixed.
+            float dx = 0.0f, dy = 0.0f, wheel = 0.0f;
+            zinput->GetMousePos(dx, dy, wheel);
+            int flipX = FALSE, flipY = FALSE;
+            zinput->GetMouseFlipXY(flipX, flipY);
+            cursorX = std::clamp(cursorX + (flipX ? -dx : dx), 0.0f, static_cast<float>(width - 1));
+            cursorY = std::clamp(cursorY + (flipY ? -dy : dy), 0.0f, static_cast<float>(height - 1));
         }
-        return mouse;
+        lastDesktopPosition = desktop;
+
+        const POINT position{static_cast<LONG>(cursorX), static_cast<LONG>(cursorY)};
+        if (position.x >= 0 && position.x < width && position.y >= 0 && position.y < height) {
+            cursorPosition = position;
+        }
+        int panelX, panelY;
+        GetPixelPos(panelX, panelY);
+        return {anx(position.x - panelX), any(position.y - panelY),
+                regainedFocus ? 0 : events.mouseWheel, true, pressed};
     }
 
     JournalInput TakeInput() {
@@ -675,11 +581,20 @@ public:
                 DrawScrollRect((*bar)->thumb, (*bar)->highlighted ? 0xFFFFD9A1 : 0xFFC7A46C);
             }
         }
+        if (cursorPosition) {
+            int width, height;
+            screen->GetPixelSize(width, height);
+            const auto size = std::clamp(height / 42, 16, 48);
+            DrawSprite(cursorView, cursorPosition->x, cursorPosition->y, size, size, 0xFFFFFFFF);
+        }
         zrenderer->SetAlphaBlendSource(previousSource);
     }
 
     int HandleEvent(int key) override {
         switch (key) {
+        case MOUSE_WHEELUP: ++pending.mouseWheel; return TRUE;
+        case MOUSE_WHEELDOWN: --pending.mouseWheel; return TRUE;
+        case MOUSE_BUTTONLEFT: pending.mouseClick = true; return TRUE;
         case KEY_ESCAPE: pending.close = true; return TRUE;
         case KEY_UP:
             if (ShiftDown()) --pending.hintLines;
@@ -1193,9 +1108,9 @@ static void Loop() {
     const bool refreshPressed = zinput->KeyToggled(KEY_R);
     journal->ClrPrintwin();
     const JournalLayout ui;
-    const auto mouse = journal->ReadMouse();
-    const int versionWidth = TextWidth("1.0.2");
-    Text(ui.Right() - versionWidth, ui.footer + ui.line, "1.0.2", versionWidth, Ink::Muted);
+    const auto mouse = journal->ReadMouse(input);
+    const int versionWidth = TextWidth("1.0.3");
+    Text(ui.Right() - versionWidth, ui.footer + ui.line, "1.0.3", versionWidth, Ink::Muted);
     const auto closeLabel = Russian(L"[ Закрыть ]");
     const int closeWidth = TextWidth(closeLabel);
     const JournalRect closeButton{ui.Right() - closeWidth, ui.Y(0), closeWidth, ui.line};
