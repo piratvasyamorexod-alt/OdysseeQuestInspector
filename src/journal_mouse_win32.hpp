@@ -3,7 +3,6 @@
 #include <Windows.h>
 #include <optional>
 #include <utility>
-#include <vector>
 
 namespace OQIMouse {
 
@@ -15,144 +14,128 @@ inline bool HasFocus(HWND game) {
     return game && WindowRoot(GetForegroundWindow()) == WindowRoot(game);
 }
 
-class RawMouseWindow {
+inline bool ClientBounds(HWND window, RECT& bounds) {
+    RECT client{};
+    if (!GetClientRect(window, &client)) return false;
+    POINT topLeft{client.left, client.top}, bottomRight{client.right, client.bottom};
+    if (!ClientToScreen(window, &topLeft) || !ClientToScreen(window, &bottomRight)) return false;
+    bounds = {topLeft.x, topLeft.y, bottomRight.x, bottomRight.y};
+    return bounds.right > bounds.left && bounds.bottom > bounds.top;
+}
+
+class MouseEvents {
 public:
-    struct Events {
-        LONG x = 0, y = 0;
-        bool down = false;
+    struct State {
+        std::optional<POINT> position;
         bool pressed = false;
         int wheel = 0;
     };
 
 private:
-    static constexpr wchar_t className[] = L"OdysseeQuestInspector.RawMouse";
-    static constexpr USHORT desktopPage = 1;
-    static constexpr USHORT mouseUsage = 2;
+    static inline MouseEvents* active = nullptr;
     HWND window = nullptr;
-    HWND game = nullptr;
-    std::optional<RAWINPUTDEVICE> previousRegistration;
-    bool registered = false;
-    Events events;
-    int wheelRemainder = 0;
-    unsigned packetCount = 0;
+    HHOOK hook = nullptr;
+    State pending;
+    int wheelDelta = 0;
+    unsigned count = 0;
 
-    static bool GetRegistrations(std::vector<RAWINPUTDEVICE>& devices) {
-        UINT count = 0;
-        if (GetRegisteredRawInputDevices(nullptr, &count, sizeof(RAWINPUTDEVICE)) != 0) return false;
-        devices.resize(count);
-        return !count || GetRegisteredRawInputDevices(devices.data(), &count, sizeof(RAWINPUTDEVICE)) == count;
-    }
-
-    void ReadPacket(LPARAM param) {
-        RAWINPUT input{};
-        UINT size = sizeof(input);
-        if (GetRawInputData(reinterpret_cast<HRAWINPUT>(param), RID_INPUT, &input,
-                            &size, sizeof(RAWINPUTHEADER)) == UINT(-1) || input.header.dwType != RIM_TYPEMOUSE) return;
-        ++packetCount;
-        const auto& mouse = input.data.mouse;
-        if (!(mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
-            events.x += mouse.lLastX;
-            events.y += mouse.lLastY;
-        }
-        if (mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN) events.down = events.pressed = true;
-        if (mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_UP) events.down = false;
-        if (mouse.usButtonFlags & RI_MOUSE_WHEEL) wheelRemainder += static_cast<short>(mouse.usButtonData);
-    }
-
-    static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
-        if (message == WM_NCCREATE) {
-            const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lp);
-            SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
-        }
-        if (message == WM_INPUT) {
-            auto* mouse = reinterpret_cast<RawMouseWindow*>(GetWindowLongPtrW(window, GWLP_USERDATA));
-            if (mouse && HasFocus(mouse->game) && GET_RAWINPUT_CODE_WPARAM(wp) == RIM_INPUT) {
-                mouse->ReadPacket(lp);
+    static LRESULT CALLBACK Observe(int code, WPARAM message, LPARAM data) {
+        if (code == HC_ACTION && active && HasFocus(active->window)) {
+            auto& mouse = *active;
+            const auto& input = *reinterpret_cast<const MSLLHOOKSTRUCT*>(data);
+            switch (message) {
+            case WM_MOUSEMOVE:
+            case WM_LBUTTONDOWN:
+            case WM_LBUTTONUP:
+            case WM_MOUSEWHEEL:
+                mouse.pending.position = input.pt;
+                ++mouse.count;
+                break;
             }
+            if (message == WM_LBUTTONDOWN) mouse.pending.pressed = true;
+            if (message == WM_MOUSEWHEEL) mouse.wheelDelta += static_cast<short>(HIWORD(input.mouseData));
         }
-        return DefWindowProcW(window, message, wp, lp);
+        return CallNextHookEx(nullptr, code, message, data);
     }
-
-    static HINSTANCE Instance() { return GetModuleHandleW(nullptr); }
 
 public:
-    RawMouseWindow() = default;
-    RawMouseWindow(const RawMouseWindow&) = delete;
-    RawMouseWindow& operator=(const RawMouseWindow&) = delete;
-    ~RawMouseWindow() { Close(); }
+    MouseEvents() = default;
+    MouseEvents(const MouseEvents&) = delete;
+    MouseEvents& operator=(const MouseEvents&) = delete;
+    ~MouseEvents() { Stop(); }
 
-    bool Open(HWND gameWindow) {
-        game = gameWindow;
-        if (!game) return false;
-        previousRegistration.reset();
-        std::vector<RAWINPUTDEVICE> devices;
-        if (!GetRegistrations(devices)) return false;
-        for (const auto& device : devices) {
-            if (device.usUsagePage != desktopPage) continue;
-            if (device.usUsage == 0 && (device.dwFlags & RIDEV_PAGEONLY)) return false;
-            if (device.usUsage == mouseUsage) previousRegistration = device;
-        }
-
-        WNDCLASSW cls{};
-        cls.lpfnWndProc = WindowProc;
-        cls.hInstance = Instance();
-        cls.lpszClassName = className;
-        if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
-        window = CreateWindowExW(0, className, nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, cls.hInstance, this);
-        if (!window) {
-            UnregisterClassW(className, Instance());
-            return false;
-        }
-
-        // Raw mouse registration is process-wide. Save the old target before
-        // claiming it, then restore it before the game reacquires the mouse.
-        const RAWINPUTDEVICE device{desktopPage, mouseUsage, 0, window};
-        registered = RegisterRawInputDevices(&device, 1, sizeof(device)) != FALSE;
-        if (!registered) Close();
-        return registered;
+    bool Start(HWND game) {
+        if (!game || active) return false;
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCWSTR>(&Observe), &module)) return false;
+        hook = SetWindowsHookExW(WH_MOUSE_LL, Observe, module, 0);
+        if (!hook) return false;
+        window = game;
+        active = this;
+        return true;
     }
 
-    void Close() {
-        if (!window) return;
-        if (registered && OwnsRegistration()) {
-            if (!previousRegistration || !RegisterRawInputDevices(&*previousRegistration, 1, sizeof(RAWINPUTDEVICE))) {
-                const RAWINPUTDEVICE remove{desktopPage, mouseUsage, RIDEV_REMOVE, nullptr};
-                RegisterRawInputDevices(&remove, 1, sizeof(remove));
-            }
-        }
-        registered = false;
-        DestroyWindow(std::exchange(window, nullptr));
-        UnregisterClassW(className, Instance());
-        events = {};
-        wheelRemainder = 0;
+    void Stop() {
+        if (active == this) active = nullptr;
+        if (hook) UnhookWindowsHookEx(std::exchange(hook, nullptr));
+        Discard();
     }
 
-    bool IsOpen() const { return registered; }
-    unsigned PacketsRead() const { return packetCount; }
-
-    bool OwnsRegistration() const {
-        std::vector<RAWINPUTDEVICE> devices;
-        if (!window || !GetRegistrations(devices)) return false;
-        for (const auto& device : devices) {
-            if (device.usUsagePage == desktopPage && device.usUsage == mouseUsage) {
-                return device.hwndTarget == window;
-            }
-        }
-        return false;
+    void Discard() {
+        pending = {};
+        wheelDelta = 0;
     }
 
-    Events Read(bool focused) {
-        if (!registered) return {};
-        MSG msg;
-        while (PeekMessageW(&msg, window, WM_INPUT, WM_INPUT, PM_REMOVE)) DispatchMessageW(&msg);
-        if (!focused) {
-            events = {};
-            wheelRemainder = 0;
-            return {};
+    bool IsListening() const { return hook != nullptr; }
+    unsigned Count() const { return count; }
+
+    State Take() {
+        pending.wheel = wheelDelta / WHEEL_DELTA;
+        wheelDelta -= pending.wheel * WHEEL_DELTA;
+        return std::exchange(pending, State{});
+    }
+};
+
+class JournalPointer {
+    int showCalls = 0;
+    std::optional<RECT> originalClip, ownedClip;
+
+    static bool SameRect(const RECT& a, const RECT& b) {
+        return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+    }
+
+public:
+    JournalPointer() = default;
+    JournalPointer(const JournalPointer&) = delete;
+    JournalPointer& operator=(const JournalPointer&) = delete;
+    ~JournalPointer() { Leave(); }
+
+    void Enter(const RECT& client, bool center) {
+        RECT previous{};
+        if (GetClipCursor(&previous) && !SameRect(client, previous) && ClipCursor(&client)) {
+            originalClip = previous;
+            ownedClip = client;
         }
-        events.wheel = wheelRemainder / WHEEL_DELTA;
-        wheelRemainder -= events.wheel * WHEEL_DELTA;
-        return std::exchange(events, Events{0, 0, events.down});
+        do {
+            ++showCalls;
+        } while (ShowCursor(TRUE) < 0);
+        if (const auto cursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512))) SetCursor(cursor);
+        if (center) SetCursorPos(client.left + (client.right - client.left) / 2,
+                                client.top + (client.bottom - client.top) / 2);
+    }
+
+    void Leave() {
+        RECT current{};
+        if (originalClip && ownedClip && GetClipCursor(&current) && SameRect(*ownedClip, current)) {
+            ClipCursor(&*originalClip);
+        }
+        originalClip.reset();
+        ownedClip.reset();
+        while (showCalls > 0) {
+            ShowCursor(FALSE);
+            --showCalls;
+        }
     }
 };
 

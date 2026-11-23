@@ -8,57 +8,93 @@ static void Check(bool condition, const char* description) {
     std::exit(1);
 }
 
-static std::optional<RAWINPUTDEVICE> GetMouseRegistration() {
-    UINT count = 0;
-    Check(GetRegisteredRawInputDevices(nullptr, &count, sizeof(RAWINPUTDEVICE)) == 0,
-          "Count registered devices");
-    std::vector<RAWINPUTDEVICE> devices(count);
-    if (count) {
-        Check(GetRegisteredRawInputDevices(devices.data(), &count, sizeof(RAWINPUTDEVICE)) == count,
-              "Read registered devices");
+static void Pump() {
+    MSG message{};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
     }
-    for (const auto& device : devices) {
-        if (device.usUsagePage == 1 && device.usUsage == 2) return device;
-    }
-    return std::nullopt;
 }
 
-static void RegisterMouse(HWND window, DWORD flags) {
-    const RAWINPUTDEVICE registration{1, 2, flags, window};
-    Check(RegisterRawInputDevices(&registration, 1, sizeof(registration)) != FALSE,
-          "Change raw mouse recipient");
+static void SendMouse(DWORD flags, LONG x = 0, LONG y = 0, DWORD data = 0) {
+    INPUT input{};
+    input.type = INPUT_MOUSE;
+    input.mi.dx = x;
+    input.mi.dy = y;
+    input.mi.mouseData = data;
+    input.mi.dwFlags = flags;
+    Check(SendInput(1, &input, sizeof(input)) == 1, "Send Windows mouse input");
+}
+
+static void WaitForPackets(const OQIMouse::MouseEvents& mouse, unsigned expected) {
+    const auto deadline = GetTickCount64() + 2000;
+    do {
+        Pump();
+        if (mouse.Count() >= expected) return;
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 20, QS_ALLINPUT);
+    } while (GetTickCount64() < deadline);
+    Check(false, "Receive Windows mouse events while pumping the same thread as the game");
 }
 
 int main() {
-    HWND previous = CreateWindowExW(0, L"STATIC", nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
-                                    GetModuleHandleW(nullptr), nullptr);
-    Check(previous != nullptr, "Create initial raw input recipient");
-    RegisterMouse(previous, RIDEV_INPUTSINK);
+    auto instance = GetModuleHandleW(nullptr);
+    HWND game = CreateWindowExW(WS_EX_TOPMOST, L"STATIC", L"Journal mouse test", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                                40, 40, 500, 350, nullptr, nullptr, instance, nullptr);
+    Check(game != nullptr, "Create an interactive game window");
+    SetForegroundWindow(game);
+    Pump();
+    Check(OQIMouse::HasFocus(game), "Give the test window foreground focus");
 
-    OQIMouse::RawMouseWindow journal;
-    Check(journal.Open(previous), "Open journal mouse window");
-    Check(journal.OwnsRegistration(), "Journal receives raw mouse");
-    auto active = GetMouseRegistration();
-    Check(active && active->hwndTarget != previous && active->hwndTarget != nullptr && active->dwFlags == 0,
-          "Input targets a separate window in the foreground");
-    journal.Close();
-    auto restored = GetMouseRegistration();
-    Check(restored && restored->hwndTarget == previous && restored->dwFlags == RIDEV_INPUTSINK,
-          "Closing journal restores the existing recipient and flags");
+    RECT client{};
+    Check(OQIMouse::ClientBounds(game, client), "Read the client rectangle in desktop coordinates");
+    RECT original{};
+    Check(GetClipCursor(&original) != FALSE, "Read the existing cursor clip");
+    const POINT start{client.left + (client.right - client.left) / 2,
+                      client.top + (client.bottom - client.top) / 2};
+    OQIMouse::JournalPointer pointer;
+    pointer.Enter(client, true);
+    POINT current{};
+    Check(GetCursorPos(&current) && current.x == start.x && current.y == start.y,
+          "Center the cursor in the focused client area");
 
-    Check(journal.Open(previous), "Reopen journal mouse window");
-    RegisterMouse(previous, 0);
-    const auto intervening = GetMouseRegistration();
-    Check(intervening && intervening->hwndTarget == previous, "Read the intervening registration");
-    Check(!journal.OwnsRegistration(), "Detect an intervening recipient");
-    journal.Close();
-    restored = GetMouseRegistration();
-    Check(restored && restored->hwndTarget == previous && restored->dwFlags == intervening->dwFlags,
-          "Keep the intervening recipient and flags");
+    OQIMouse::MouseEvents mouse;
+    Check(mouse.Start(game), "Listen to Windows mouse input");
+    const auto before = mouse.Count();
+    SendMouse(MOUSEEVENTF_MOVE, 15, 20);
+    WaitForPackets(mouse, before + 1);
+    const auto motion = mouse.Take();
+    Check(motion.position && motion.position->x > start.x && motion.position->y > start.y,
+          "Receive cursor movement in desktop coordinates");
+    const auto beforeClick = mouse.Count();
+    SendMouse(MOUSEEVENTF_LEFTDOWN);
+    SendMouse(MOUSEEVENTF_LEFTUP);
+    WaitForPackets(mouse, beforeClick + 2);
+    Check(mouse.Take().pressed, "Receive a fast click between two game frames");
+    Check(!mouse.Take().pressed, "Consume the click once");
 
-    RegisterMouse(nullptr, RIDEV_REMOVE);
-    Check(journal.Open(previous), "Open journal when no mouse is registered");
-    journal.Close();
-    Check(!GetMouseRegistration(), "Closing restores absence of a mouse registration");
-    DestroyWindow(previous);
+    const auto beforeWheel = mouse.Count();
+    SendMouse(MOUSEEVENTF_WHEEL, 0, 0, WHEEL_DELTA / 2);
+    WaitForPackets(mouse, beforeWheel + 1);
+    Check(mouse.Take().wheel == 0, "Keep a partial wheel notch");
+    SendMouse(MOUSEEVENTF_WHEEL, 0, 0, WHEEL_DELTA / 2);
+    WaitForPackets(mouse, beforeWheel + 2);
+    Check(mouse.Take().wheel == 1, "Deliver one complete wheel notch");
+
+    HWND other = CreateWindowExW(WS_EX_TOPMOST, L"STATIC", L"Focus test", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                                 80, 80, 300, 220, nullptr, nullptr, instance, nullptr);
+    Check(other != nullptr, "Create the other window for the focus test");
+    SetForegroundWindow(other);
+    Pump();
+    Check(OQIMouse::HasFocus(other) && !OQIMouse::HasFocus(game), "Switch focus away from the game");
+    const auto beforeOutside = mouse.Count();
+    SendMouse(MOUSEEVENTF_WHEEL, 0, 0, WHEEL_DELTA);
+    Pump();
+    Check(mouse.Count() == beforeOutside && mouse.Take().wheel == 0, "Ignore mouse input in another window");
+
+    mouse.Stop();
+    pointer.Leave();
+    RECT restored{};
+    Check(GetClipCursor(&restored) && EqualRect(&restored, &original), "Restore the prior cursor clip");
+    DestroyWindow(other);
+    DestroyWindow(game);
 }
