@@ -388,23 +388,82 @@ struct JournalInput {
     bool close = false;
 };
 
+struct JournalRect {
+    int x, y, width, height;
+
+    bool Contains(int px, int py) const {
+        return px >= x && px < x + width && py >= y && py < y + height;
+    }
+};
+
+struct JournalMouse {
+    int x = 0, y = 0, wheel = 0;
+    bool active = false, pressed = false;
+
+    bool Over(const JournalRect& bounds) const { return active && bounds.Contains(x, y); }
+};
+
 static bool ShiftDown() {
     return zinput->KeyPressed(KEY_LSHIFT) || zinput->KeyPressed(KEY_RSHIFT);
 }
 
 class JournalView : public zCView {
     oCGame& game;
+    const bool restoreMouse;
+    float cursorX = 0.0f, cursorY = 0.0f, wheelRemainder = 0.0f;
+    bool cursorStarted = false, cursorActive = false, mouseDown = false;
+
+    static void DrawStroke(int x1, int y1, int x2, int y2, unsigned long ink) {
+        zCOLOR color;
+        color.dword = ink;
+        zrenderer->DrawLine(static_cast<float>(x1), static_cast<float>(y1),
+                            static_cast<float>(x2), static_cast<float>(y2), color);
+    }
+
+    void DrawScrollRect(const JournalRect& rect, unsigned long ink) {
+        int x, y;
+        GetPixelPos(x, y);
+        const int top = y + nay(rect.y);
+        const int bottom = y + nay(rect.y + rect.height) - 1;
+        const int left = x + nax(rect.x);
+        const int right = x + nax(rect.x + rect.width);
+        for (int column = left; column < right; ++column) DrawStroke(column, top, column, bottom, ink);
+    }
+
+    void DrawCursor() const {
+        static constexpr int spans[][2] = {
+            {0, 0}, {0, 1}, {0, 2}, {0, 3}, {0, 4}, {0, 5}, {0, 6}, {0, 7}, {0, 8},
+            {0, 9}, {0, 10}, {0, 7}, {0, 7}, {0, 8}, {4, 8}, {5, 9}, {6, 9}, {7, 8}
+        };
+        const int x = static_cast<int>(cursorX);
+        const int y = static_cast<int>(cursorY);
+        for (int row = 0; row < static_cast<int>(std::size(spans)); ++row) {
+            DrawStroke(x + spans[row][0] - 1, y + row + 1, x + spans[row][1] + 2, y + row + 1, 0xFF15100B);
+        }
+        for (int row = 0; row < static_cast<int>(std::size(spans)); ++row) {
+            DrawStroke(x + spans[row][0], y + row, x + spans[row][1] + 1, y + row, 0xFFFFE3B3);
+        }
+    }
 
 public:
-    JournalInput pending;
+    struct ScrollBar {
+        JournalRect track, thumb;
+        bool highlighted;
+    };
 
-    explicit JournalView(oCGame& game) : zCView(296, 610, 7600, 6520), game(game) {
+    JournalInput pending;
+    std::optional<ScrollBar> hintScrollBar;
+    std::optional<int> hintGrabOffset;
+
+    explicit JournalView(oCGame& game) : zCView(296, 610, 7600, 6520), game(game),
+                                        restoreMouse(!zinput->GetDeviceEnabled(zINPUT_MOUSE)) {
         SetFont(screen->GetFont());
         InsertBack(zSTRING("OQI_JOURNAL.TGA"));
         SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
         SetTransparency(205);
         // Use the engine pause with its built-in message suppressed.
         game.Pause();
+        if (restoreMouse) zinput->SetDeviceEnabled(zINPUT_MOUSE, TRUE);
         screen->InsertItem(this);
         SetEnableHandleEvent(TRUE);
         SetHandleEventTop();
@@ -413,7 +472,49 @@ public:
     ~JournalView() override {
         SetEnableHandleEvent(FALSE);
         if (owner) owner->RemoveItem(this);
+        if (restoreMouse && zinput) zinput->SetDeviceEnabled(zINPUT_MOUSE, FALSE);
         if (game.IsOnPause()) game.Unpause();
+    }
+
+    JournalMouse ReadMouse() {
+        hintScrollBar.reset();
+        int screenWidth, screenHeight;
+        screen->GetPixelSize(screenWidth, screenHeight);
+        if (screenWidth <= 0 || screenHeight <= 0 || (hWndApp && GetForegroundWindow() != hWndApp)) {
+            cursorActive = false;
+            wheelRemainder = 0.0f;
+            hintGrabOffset.reset();
+            return {};
+        }
+        if (!cursorStarted) {
+            cursorX = screenWidth * 0.5f;
+            cursorY = screenHeight * 0.5f;
+            cursorStarted = true;
+        }
+
+        const bool down = zinput->GetMouseButtonPressedLeft() != 0;
+        const bool pressed = cursorActive && down && !mouseDown;
+        if (cursorActive) {
+            // ZenGin exposes relative motion and the current DirectInput wheel delta.
+            float dx = 0.0f, dy = 0.0f, wheel = 0.0f;
+            int flipX = FALSE, flipY = FALSE;
+            zinput->GetMousePos(dx, dy, wheel);
+            zinput->GetMouseFlipXY(flipX, flipY);
+            cursorX += flipX ? -dx : dx;
+            cursorY += flipY ? -dy : dy;
+            wheelRemainder += wheel;
+        }
+        cursorActive = true;
+        mouseDown = down;
+        if (!down) hintGrabOffset.reset();
+        cursorX = std::clamp(cursorX, 0.0f, static_cast<float>(screenWidth - 1));
+        cursorY = std::clamp(cursorY, 0.0f, static_cast<float>(screenHeight - 1));
+        const int notches = static_cast<int>(wheelRemainder / WHEEL_DELTA);
+        wheelRemainder -= static_cast<float>(notches * WHEEL_DELTA);
+        int panelX, panelY;
+        GetPixelPos(panelX, panelY);
+        return {anx(static_cast<int>(cursorX) - panelX), any(static_cast<int>(cursorY) - panelY),
+                notches, true, pressed};
     }
 
     void Blit() override {
@@ -422,6 +523,11 @@ public:
         zrenderer->SetAlphaBlendSource(zRND_ALPHA_SOURCE_MATERIAL);
         zCView::Blit();
         zrenderer->SetAlphaBlendSource(previousSource);
+        if (hintScrollBar) {
+            DrawScrollRect(hintScrollBar->track, 0xFF5C4A33);
+            DrawScrollRect(hintScrollBar->thumb, hintScrollBar->highlighted ? 0xFFFFD9A1 : 0xFFC29E64);
+        }
+        if (cursorActive) DrawCursor();
     }
 
     int HandleEvent(int key) override {
@@ -459,6 +565,7 @@ static int firstVisible = 0;
 static void HideHint() {
     revealedQuest.reset();
     hintOffset = 0;
+    if (journal) journal->hintGrabOffset.reset();
 }
 
 static void CloseJournal() {
@@ -585,6 +692,7 @@ static const wchar_t* ClosedNotice(std::size_t id) {
 static constexpr int questFilterCount = 7;
 static constexpr int rawFilterCount = 5;
 static constexpr int rawPageSize = 13;
+static constexpr int wheelLines = 3;
 
 static const wchar_t* DepartureLabel(Step step) {
     switch (step) {
@@ -604,13 +712,19 @@ static int SelectedTab() {
     return static_cast<int>(std::find(std::begin(tabs), std::end(tabs), SelectedLocation()) - std::begin(tabs));
 }
 
-static void PaintTabs(const JournalLayout& ui) {
-    const int cell = (ui.Right() - ui.margin) / static_cast<int>(std::size(tabs));
+static JournalRect TabBounds(const JournalLayout& ui, int tab) {
+    const int width = (ui.Right() - ui.margin) / static_cast<int>(std::size(tabs));
+    return {ui.margin + tab * width, ui.Y(1), width, ui.line};
+}
+
+static void PaintTabs(const JournalLayout& ui, const JournalMouse& mouse) {
     for (int i = 0; i < static_cast<int>(std::size(tabs)); ++i) {
         const auto name = Russian(catalogs[static_cast<std::size_t>(tabs[i])].name);
         const bool active = tabs[i] == SelectedLocation();
         const auto label = active ? "[ " + name + " ]" : name;
-        Text(ui.margin + i * cell, ui.Y(1), label, cell - ui.margin / 2, active ? Ink::Gold : Ink::Muted);
+        const auto cell = TabBounds(ui, i);
+        Text(cell.x, cell.y, label, cell.width - ui.margin / 2,
+             active || mouse.Over(cell) ? Ink::Gold : Ink::Muted);
     }
 }
 
@@ -649,7 +763,8 @@ static const wchar_t* QuestStatus(const QuestItem& item) {
     return StatusText(status);
 }
 
-static void PaintDetails(const JournalLayout& ui, std::size_t id, const JournalInput& input) {
+static void PaintDetails(const JournalLayout& ui, std::size_t id, const JournalInput& input,
+                         const JournalMouse& mouse) {
     const auto& item = questItems[id];
     const auto& quest = SelectedCatalog().entries[id];
     const int width = ui.Right() - ui.details;
@@ -664,14 +779,24 @@ static void PaintDetails(const JournalLayout& ui, std::size_t id, const JournalI
     Text(ui.details, ui.Y(row++), Russian(QuestStatus(item)), width, Ink::Gold);
     if (row >= 5 + ui.rows) return;
 
-    Text(ui.details, ui.Y(row++), Russian(revealedQuest ? L"Enter · Скрыть подсказку"
-                                                       : L"Enter · Показать подсказку"),
-         width, Ink::Muted);
+    const auto button = [](bool open) {
+        return "[ " + Russian(open ? L"Скрыть подсказку" : L"Показать подсказку") + " ]";
+    };
+    const JournalRect buttonBounds{ui.details, ui.Y(row),
+        (std::min)(width, TextWidth(button(revealedQuest.has_value()))), ui.line};
+    if (input.hint || (mouse.pressed && mouse.Over(buttonBounds))) {
+        if (revealedQuest) HideHint();
+        else revealedQuest = id;
+    }
+    Text(ui.details, ui.Y(row++), button(revealedQuest.has_value()) + "  Enter", width,
+         mouse.Over(buttonBounds) ? Ink::Gold : Ink::Muted);
     if (!revealedQuest || row >= 5 + ui.rows) return;
 
+    const int barWidth = journal->anx(10);
+    const int textWidth = width - barWidth - journal->anx(7);
     std::vector<std::string> lines;
     const auto append = [&](const std::string& paragraph) {
-        auto wrapped = WrapText(paragraph, width);
+        auto wrapped = WrapText(paragraph, textWidth);
         lines.insert(lines.end(), std::make_move_iterator(wrapped.begin()), std::make_move_iterator(wrapped.end()));
     };
     std::wstring_view walkthrough = quest.walkthrough;
@@ -687,11 +812,31 @@ static void PaintDetails(const JournalLayout& ui, std::size_t id, const JournalI
     const int available = 5 + ui.rows - row;
     const int count = static_cast<int>(lines.size());
     const int capacity = count > available && available > 1 ? available - 1 : available;
-    hintOffset = std::clamp(hintOffset + input.hintLines + input.hintPages * capacity,
-                            0, (std::max)(0, count - capacity));
+    const int maxOffset = (std::max)(0, count - capacity);
+    const JournalRect details{ui.details, ui.Y(4), width, ui.footer - ui.Y(4)};
+    const int wheel = mouse.Over(details) ? mouse.wheel * wheelLines : 0;
+    hintOffset = std::clamp(hintOffset + input.hintLines + input.hintPages * capacity - wheel, 0, maxOffset);
+    if (maxOffset > 0) {
+        const JournalRect track{ui.Right() - barWidth, ui.Y(row), barWidth, ui.line * capacity};
+        const int thumbHeight = std::clamp(track.height * capacity / count, ui.line / 2, track.height - 1);
+        const int travel = track.height - thumbHeight;
+        int thumbY = track.y + travel * hintOffset / maxOffset;
+        if (mouse.pressed && mouse.Over(track)) {
+            const bool onThumb = mouse.y >= thumbY && mouse.y < thumbY + thumbHeight;
+            journal->hintGrabOffset = onThumb ? mouse.y - thumbY : thumbHeight / 2;
+        }
+        if (journal->hintGrabOffset) {
+            const int position = std::clamp(mouse.y - track.y - *journal->hintGrabOffset, 0, travel);
+            hintOffset = (position * maxOffset + travel / 2) / travel;
+            thumbY = track.y + travel * hintOffset / maxOffset;
+        }
+        journal->hintScrollBar = JournalView::ScrollBar{
+            track, {track.x, thumbY, track.width, thumbHeight},
+            mouse.Over(track) || journal->hintGrabOffset.has_value()};
+    }
     const int end = (std::min)(hintOffset + capacity, count);
     for (int i = hintOffset; i < end; ++i) {
-        Text(ui.details, ui.Y(row++), lines[i], width);
+        Text(ui.details, ui.Y(row++), lines[i], textWidth);
     }
     if (capacity < available) {
         const auto position = std::to_string(hintOffset + 1) + "-" + std::to_string(end)
@@ -706,10 +851,10 @@ static Ink QuestInk(const QuestItem& item) {
     return Ink::Muted;
 }
 
-static void PaintQuests(const JournalLayout& ui, const JournalInput& input) {
+static void PaintQuests(const JournalLayout& ui, const JournalInput& input, const JournalMouse& mouse) {
     const auto& catalog = SelectedCatalog();
     Text(ui.margin, ui.Y(0), Russian(L"Журнал экспедиции · Глава 2"), ui.Right() - ui.margin, Ink::Gold);
-    PaintTabs(ui);
+    PaintTabs(ui, mouse);
     Text(ui.margin, ui.footer, Russian(L"Вверх/вниз · Выбор    PgUp/PgDn · Страница    Влево/вправо · Локация"),
          ui.Right() - ui.margin, Ink::Muted);
     Text(ui.margin, ui.footer + ui.line, Russian(L"Esc · Закрыть    Shift+F · Фильтр    Shift+V · Перед отплытием    Shift+D · Флаги"),
@@ -748,17 +893,22 @@ static void PaintQuests(const JournalLayout& ui, const JournalInput& input) {
     }
 
     const int count = static_cast<int>(visible.size());
-    const int oldSelection = selected;
-    selected = std::clamp(selected + input.selection + input.pages * ui.rows, 0, count - 1);
+    const int maxFirst = (std::max)(0, count - ui.rows);
+    firstVisible = std::clamp(firstVisible, 0, maxFirst);
+    const JournalRect list{ui.margin, ui.Y(5), ui.details - ui.margin, ui.rows * ui.line};
+    const int rowUnderMouse = mouse.Over(list) ? firstVisible + (mouse.y - list.y) / ui.line : count;
+    const bool clickedRow = mouse.pressed && rowUnderMouse < count;
+    const int keyboardMove = input.selection + input.pages * ui.rows;
+    selected = std::clamp(clickedRow ? rowUnderMouse : selected + keyboardMove, 0, count - 1);
     const auto selectedId = visible[selected];
-    if (oldSelection != selected || revealedQuest != selectedId) HideHint();
-    if (input.hint) {
-        if (revealedQuest) HideHint();
-        else revealedQuest = selectedId;
-    }
+    if (revealedQuest != selectedId) HideHint();
 
-    firstVisible = std::clamp(firstVisible, (std::max)(0, selected - ui.rows + 1), selected);
-    firstVisible = (std::min)(firstVisible, (std::max)(0, count - ui.rows));
+    if (keyboardMove && !clickedRow) {
+        firstVisible = std::clamp(firstVisible, (std::max)(0, selected - ui.rows + 1), selected);
+    }
+    const JournalRect listColumn{list.x, ui.Y(4), list.width, ui.footer - ui.Y(4)};
+    if (mouse.Over(listColumn)) firstVisible -= mouse.wheel * wheelLines;
+    firstVisible = std::clamp(firstVisible, 0, maxFirst);
     const int end = (std::min)(firstVisible + ui.rows, count);
     const auto indicator = std::to_string(firstVisible + 1) + "-" + std::to_string(end)
         + " / " + std::to_string(count);
@@ -776,11 +926,12 @@ static void PaintQuests(const JournalLayout& ui, const JournalInput& input) {
         const int y = ui.Y(5 + i - firstVisible);
         const auto fittedStatus = FitText(status, statusColumn);
         const int statusX = ui.listRight - TextWidth(fittedStatus);
+        const bool hovered = mouse.Over({list.x, y, list.width, ui.line});
         Text(ui.margin, y, title, ui.listRight - statusColumn - ui.margin * 3 / 2,
-             i == selected ? Ink::Gold : Ink::Paper);
+             i == selected || hovered ? Ink::Gold : Ink::Paper);
         Text(statusX, y, fittedStatus, ui.listRight - statusX, QuestInk(item));
     }
-    PaintDetails(ui, selectedId, input);
+    PaintDetails(ui, selectedId, input, mouse);
 }
 
 static void PaintRaw(const JournalLayout& ui) {
@@ -873,6 +1024,16 @@ static void Loop() {
     const bool refreshPressed = zinput->KeyToggled(KEY_R);
     journal->ClrPrintwin();
     const JournalLayout ui;
+    const auto mouse = journal->ReadMouse();
+    const auto closeLabel = Russian(L"[ Закрыть ]");
+    const int closeWidth = TextWidth(closeLabel);
+    const JournalRect closeButton{ui.Right() - closeWidth, ui.Y(0), closeWidth, ui.line};
+    const bool closeHovered = mouse.Over(closeButton);
+    if (mouse.pressed && closeHovered) {
+        CloseJournal();
+        return;
+    }
+    Text(closeButton.x, closeButton.y, closeLabel, closeButton.width, closeHovered ? Ink::Gold : Ink::Muted);
     if (diagnostics) {
         if (filterPressed) { rawFilter = (rawFilter + 1) % rawFilterCount; page = 0; }
         if (refreshPressed) RefreshRaw();
@@ -884,7 +1045,12 @@ static void Loop() {
     const int tabCount = static_cast<int>(std::size(tabs));
     const int currentTab = SelectedTab();
     const int movement = input.locations + static_cast<int>(locationPressed);
-    const int nextTab = (currentTab + movement % tabCount + tabCount) % tabCount;
+    int nextTab = (currentTab + movement % tabCount + tabCount) % tabCount;
+    if (mouse.pressed) {
+        for (int tab = 0; tab < tabCount; ++tab) {
+            if (mouse.Over(TabBounds(ui, tab))) nextTab = tab;
+        }
+    }
     if (nextTab != currentTab) {
         location = tabs[nextTab];
         questFilter = 0;
@@ -905,7 +1071,7 @@ static void Loop() {
         input.hint = false;
     }
     if (refreshPressed || std::chrono::steady_clock::now() >= nextRefresh) RefreshQuests();
-    PaintQuests(ui, input);
+    PaintQuests(ui, input, mouse);
 }
 
 class LoadScope {
