@@ -407,16 +407,63 @@ static bool ShiftDown() {
     return zinput->KeyPressed(KEY_LSHIFT) || zinput->KeyPressed(KEY_RSHIFT);
 }
 
+// Observe the game's window messages without replacing its window procedure or input hooks.
+class JournalMouseMessages {
+    static inline JournalMouseMessages* active = nullptr;
+    HHOOK hook = nullptr;
+    HWND window;
+
+    static LRESULT CALLBACK Observe(int code, WPARAM removed, LPARAM param) {
+        if (code >= 0 && removed == PM_REMOVE && active) {
+            const auto& msg = *reinterpret_cast<const MSG*>(param);
+            if (msg.hwnd && GetAncestor(msg.hwnd, GA_ROOT) == active->window) {
+                switch (msg.message) {
+                case WM_MOUSEWHEEL: active->wheel += static_cast<short>(HIWORD(msg.wParam)); break;
+                case WM_LBUTTONDOWN:
+                case WM_LBUTTONDBLCLK: active->click = true; break;
+                }
+            }
+        }
+        return CallNextHookEx(nullptr, code, removed, param);
+    }
+
+public:
+    int wheel = 0;
+    bool click = false;
+
+    explicit JournalMouseMessages(HWND gameWindow) : window(gameWindow) {
+        if (window) {
+            active = this;
+            hook = SetWindowsHookExW(WH_GETMESSAGE, Observe, nullptr, GetCurrentThreadId());
+        }
+    }
+
+    ~JournalMouseMessages() {
+        active = nullptr;
+        if (hook) UnhookWindowsHookEx(hook);
+    }
+};
+
+static HWND JournalWindow() {
+    const HWND foreground = GetForegroundWindow();
+    DWORD process = 0;
+    GetWindowThreadProcessId(foreground, &process);
+    return process == GetCurrentProcessId() ? GetAncestor(foreground, GA_ROOT)
+                                             : GetAncestor(hWndApp, GA_ROOT);
+}
+
 class JournalView : public zCView {
     oCGame& game;
     const bool restoreMouse;
     float cursorX = 0.0f, cursorY = 0.0f, wheelRemainder = 0.0f;
     bool cursorStarted = false, cursorActive = false, mouseDown = false;
 
-    zCView cursorView{0, 0, 32, 32};
+    const HWND inputWindow = JournalWindow();
+    JournalMouseMessages mouseMessages{inputWindow};
     zCView scrollView{0, 0, 8, 8};
     POINT lastPointer{};
     bool havePointer = false;
+    bool windowWheel = false;
 
     // Render these textures through the same engine path as the journal itself.
     static void DrawSprite(zCView& view, int x, int y, int width, int height, unsigned long ink) {
@@ -438,6 +485,22 @@ class JournalView : public zCView {
                    nay(rect.y + rect.height) - nay(rect.y), ink);
     }
 
+    void DrawCursor() {
+        const int x = static_cast<int>(cursorX);
+        const int y = static_cast<int>(cursorY);
+        // Opaque strips share the working scrollbar texture and keep the pointer visible
+        // even when a renderer ignores alpha in a dedicated cursor texture.
+        constexpr int tipWidths[] = {2, 4, 6, 8, 10, 12, 14, 8};
+        for (int row = 0; row < static_cast<int>(std::size(tipWidths)); ++row) {
+            DrawSprite(scrollView, x, y + row * 2, tipWidths[row] + 2, 4, 0xFF271B10);
+        }
+        DrawSprite(scrollView, x + 5, y + 14, 6, 8, 0xFF271B10);
+        for (int row = 0; row < static_cast<int>(std::size(tipWidths)); ++row) {
+            DrawSprite(scrollView, x + 1, y + 1 + row * 2, tipWidths[row], 2, 0xFFFFE3B3);
+        }
+        DrawSprite(scrollView, x + 6, y + 15, 4, 6, 0xFFFFE3B3);
+    }
+
 public:
     struct ScrollBar {
         JournalRect track, thumb;
@@ -454,9 +517,6 @@ public:
         InsertBack(zSTRING("OQI_JOURNAL.TGA"));
         SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
         SetTransparency(205);
-        cursorView.InsertBack(zSTRING("OQI_CURSOR.TGA"));
-        cursorView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
-        cursorView.SetTransparency(255);
         scrollView.InsertBack(zSTRING("OQI_SCROLL.TGA"));
         scrollView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
         scrollView.SetTransparency(255);
@@ -493,6 +553,8 @@ public:
             cursorActive = false;
             havePointer = false;
             wheelRemainder = 0.0f;
+            mouseMessages.wheel = 0;
+            mouseMessages.click = false;
             listGrabOffset.reset();
             hintGrabOffset.reset();
             return {};
@@ -500,23 +562,36 @@ public:
 
         const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0
             || zinput->GetMouseButtonPressedLeft() != 0;
-        const bool pressed = cursorActive && down && !mouseDown;
+        const bool clicked = std::exchange(mouseMessages.click, false);
+        const bool pressed = clicked || (cursorActive && down && !mouseDown);
+
         POINT pointer{};
-        const bool gotPointer = GetCursorPos(&pointer) != 0;
+        RECT client{};
+        const bool gotPointer = inputWindow && GetCursorPos(&pointer)
+            && ScreenToClient(inputWindow, &pointer) && GetClientRect(inputWindow, &client)
+            && client.right > 0 && client.bottom > 0;
+        const bool pointerMoved = gotPointer && havePointer
+            && (pointer.x != lastPointer.x || pointer.y != lastPointer.y);
+
         if (cursorActive) {
             float dx = 0.0f, dy = 0.0f, wheel = 0.0f;
             int flipX = FALSE, flipY = FALSE;
             zinput->GetMousePos(dx, dy, wheel);
             zinput->GetMouseFlipXY(flipX, flipY);
-            // Use desktop motion when the renderer leaves relative input idle.
-            if (dx == 0.0f && dy == 0.0f && gotPointer && havePointer) {
-                cursorX += static_cast<float>(pointer.x - lastPointer.x);
-                cursorY += static_cast<float>(pointer.y - lastPointer.y);
+            if (gotPointer && (pointerMoved || clicked) && pointer.x >= 0 && pointer.x < client.right
+                && pointer.y >= 0 && pointer.y < client.bottom) {
+                cursorX = static_cast<float>(pointer.x) * screenWidth / client.right;
+                cursorY = static_cast<float>(pointer.y) * screenHeight / client.bottom;
             } else {
                 cursorX += flipX ? -dx : dx;
                 cursorY += flipY ? -dy : dy;
             }
-            wheelRemainder += wheel;
+            const int queuedWheel = std::exchange(mouseMessages.wheel, 0);
+            if (queuedWheel && !windowWheel) {
+                windowWheel = true;
+                wheelRemainder = 0.0f;
+            }
+            wheelRemainder += windowWheel ? static_cast<float>(queuedWheel) : wheel;
         }
         havePointer = gotPointer;
         lastPointer = pointer;
@@ -546,9 +621,7 @@ public:
                 DrawScrollRect((*bar)->thumb, (*bar)->highlighted ? 0xFFFFD9A1 : 0xFFC7A46C);
             }
         }
-        if (cursorStarted) {
-            DrawSprite(cursorView, static_cast<int>(cursorX) - 1, static_cast<int>(cursorY) - 1, 40, 40, 0xFFFFFFFF);
-        }
+        if (cursorStarted) DrawCursor();
         zrenderer->SetAlphaBlendSource(previousSource);
     }
 
