@@ -52,6 +52,15 @@ static void WaitForPackets(const OQIMouse::MouseEvents& mouse, unsigned expected
 
 int main() {
     auto instance = GetModuleHandleW(nullptr);
+    const auto journalCursor = LoadCursorW(instance, L"OQI_JOURNAL_CURSOR");
+    Check(journalCursor && journalCursor != LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)),
+          "Load the journal cursor resource");
+    ICONINFO icon{};
+    Check(GetIconInfo(journalCursor, &icon) && !icon.fIcon && icon.xHotspot == 0 && icon.yHotspot == 0,
+          "Place the click hotspot at the arrow tip");
+    if (icon.hbmColor) DeleteObject(icon.hbmColor);
+    if (icon.hbmMask) DeleteObject(icon.hbmMask);
+
     WNDCLASSW windowClass{};
     windowClass.lpfnWndProc = GameWindow;
     windowClass.hInstance = instance;
@@ -78,7 +87,7 @@ int main() {
     const auto beforeCursor = cursorMessages;
     SendMessageW(game, WM_SETCURSOR, reinterpret_cast<WPARAM>(game), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
     Check(cursorMessages == beforeCursor, "Intercept the game's request to hide the system pointer");
-    Check(GetCursor() == LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)), "Set the system arrow in the game thread");
+    Check(GetCursor() == journalCursor, "Keep the custom cursor active in the game thread");
     ShowCursor(FALSE);
     Check(ShowCursor(TRUE) >= 0, "Enable the system pointer in the game thread");
 

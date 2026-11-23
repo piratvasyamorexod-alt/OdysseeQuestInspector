@@ -579,7 +579,7 @@ public:
 
     std::string MouseDiagnostics() const {
         char label[96];
-        std::snprintf(label, sizeof(label), "1.0.7  %s  X%d Y%d  P%u C%u W%u",
+        std::snprintf(label, sizeof(label), "1.0.8  %s  X%d Y%d  P%u C%u W%u",
                       mouseEvents.IsListening() ? "WIN" : "ZEN", cursorX, cursorY,
                       mouseEvents.Count(), mouseClicks, mouseWheelSteps);
         return label;
@@ -1164,7 +1164,7 @@ static void Loop() {
     journal->ClrPrintwin();
     const JournalLayout ui;
     const auto mouse = journal->ReadMouse(input);
-    const std::string status = diagnostics ? journal->MouseDiagnostics() : "1.0.7";
+    const std::string status = diagnostics ? journal->MouseDiagnostics() : "1.0.8";
     const int versionWidth = TextWidth(status);
     Text(ui.Right() - versionWidth, ui.footer + ui.line, status, versionWidth, Ink::Muted);
     const auto closeLabel = Russian(L"[ Закрыть ]");

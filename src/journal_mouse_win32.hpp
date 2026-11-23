@@ -204,7 +204,7 @@ public:
 
 class JournalPointer {
     HWND cursorWindow = nullptr;
-    HCURSOR arrow = nullptr;
+    HCURSOR cursor = nullptr;
     int showCalls = 0;
     std::optional<RECT> originalClip, ownedClip;
 
@@ -212,15 +212,24 @@ class JournalPointer {
         return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
     }
 
-    static LRESULT CALLBACK KeepSystemCursor(HWND window, UINT message, WPARAM wp, LPARAM lp,
+    static HCURSOR LoadJournalCursor() {
+        HMODULE module = nullptr;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCWSTR>(&LoadJournalCursor), &module)) {
+            if (auto resource = LoadCursorW(module, L"OQI_JOURNAL_CURSOR")) return resource;
+        }
+        return LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+    }
+
+    static LRESULT CALLBACK KeepJournalCursor(HWND window, UINT message, WPARAM wp, LPARAM lp,
                                               UINT_PTR id, DWORD_PTR context) {
         auto& pointer = *reinterpret_cast<JournalPointer*>(context);
         if (message == WM_SETCURSOR && LOWORD(lp) == HTCLIENT && HasFocus(window)) {
-            SetCursor(pointer.arrow);
+            SetCursor(pointer.cursor);
             return TRUE;
         }
         if (message == WM_NCDESTROY) {
-            RemoveWindowSubclass(window, KeepSystemCursor, id);
+            RemoveWindowSubclass(window, KeepJournalCursor, id);
             pointer.cursorWindow = nullptr;
         }
         return DefSubclassProc(window, message, wp, lp);
@@ -238,21 +247,21 @@ public:
             originalClip = previous;
             ownedClip = client;
         }
-        arrow = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
-        if (arrow && GetWindowThreadProcessId(window, nullptr) == GetCurrentThreadId()
-            && SetWindowSubclass(window, KeepSystemCursor, 0, reinterpret_cast<DWORD_PTR>(this))) {
+        cursor = LoadJournalCursor();
+        if (cursor && GetWindowThreadProcessId(window, nullptr) == GetCurrentThreadId()
+            && SetWindowSubclass(window, KeepJournalCursor, 0, reinterpret_cast<DWORD_PTR>(this))) {
             cursorWindow = window;
         }
         do {
             ++showCalls;
         } while (ShowCursor(TRUE) < 0);
-        if (arrow) SetCursor(arrow);
+        if (cursor) SetCursor(cursor);
         if (center) SetCursorPos(client.left + (client.right - client.left) / 2,
                                 client.top + (client.bottom - client.top) / 2);
     }
 
     void Leave() {
-        if (cursorWindow) RemoveWindowSubclass(std::exchange(cursorWindow, nullptr), KeepSystemCursor, 0);
+        if (cursorWindow) RemoveWindowSubclass(std::exchange(cursorWindow, nullptr), KeepJournalCursor, 0);
         RECT current{};
         if (originalClip && ownedClip && GetClipCursor(&current) && SameRect(*ownedClip, current)) {
             ClipCursor(&*originalClip);
