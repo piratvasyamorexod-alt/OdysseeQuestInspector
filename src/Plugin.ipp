@@ -413,36 +413,29 @@ class JournalView : public zCView {
     float cursorX = 0.0f, cursorY = 0.0f, wheelRemainder = 0.0f;
     bool cursorStarted = false, cursorActive = false, mouseDown = false;
 
-    static void DrawStroke(int x1, int y1, int x2, int y2, unsigned long ink) {
+    zCView cursorView{0, 0, 32, 32};
+    zCView scrollView{0, 0, 8, 8};
+    POINT lastPointer{};
+    bool havePointer = false;
+
+    // Render these textures through the same engine path as the journal itself.
+    static void DrawSprite(zCView& view, int x, int y, int width, int height, unsigned long ink) {
+        view.pposx = x;
+        view.pposy = y;
+        view.psizex = width;
+        view.psizey = height;
         zCOLOR color;
         color.dword = ink;
-        zrenderer->DrawLine(static_cast<float>(x1), static_cast<float>(y1),
-                            static_cast<float>(x2), static_cast<float>(y2), color);
+        view.SetColor(color);
+        view.Blit();
     }
 
     void DrawScrollRect(const JournalRect& rect, unsigned long ink) {
         int x, y;
         GetPixelPos(x, y);
-        const int top = y + nay(rect.y);
-        const int bottom = y + nay(rect.y + rect.height) - 1;
-        const int left = x + nax(rect.x);
-        const int right = x + nax(rect.x + rect.width);
-        for (int column = left; column < right; ++column) DrawStroke(column, top, column, bottom, ink);
-    }
-
-    void DrawCursor() const {
-        static constexpr int spans[][2] = {
-            {0, 0}, {0, 1}, {0, 2}, {0, 3}, {0, 4}, {0, 5}, {0, 6}, {0, 7}, {0, 8},
-            {0, 9}, {0, 10}, {0, 7}, {0, 7}, {0, 8}, {4, 8}, {5, 9}, {6, 9}, {7, 8}
-        };
-        const int x = static_cast<int>(cursorX);
-        const int y = static_cast<int>(cursorY);
-        for (int row = 0; row < static_cast<int>(std::size(spans)); ++row) {
-            DrawStroke(x + spans[row][0] - 1, y + row + 1, x + spans[row][1] + 2, y + row + 1, 0xFF15100B);
-        }
-        for (int row = 0; row < static_cast<int>(std::size(spans)); ++row) {
-            DrawStroke(x + spans[row][0], y + row, x + spans[row][1] + 1, y + row, 0xFFFFE3B3);
-        }
+        DrawSprite(scrollView, x + nax(rect.x), y + nay(rect.y),
+                   nax(rect.x + rect.width) - nax(rect.x),
+                   nay(rect.y + rect.height) - nay(rect.y), ink);
     }
 
 public:
@@ -452,8 +445,8 @@ public:
     };
 
     JournalInput pending;
-    std::optional<ScrollBar> hintScrollBar;
-    std::optional<int> hintGrabOffset;
+    std::optional<ScrollBar> listScrollBar, hintScrollBar;
+    std::optional<int> listGrabOffset, hintGrabOffset;
 
     explicit JournalView(oCGame& game) : zCView(296, 610, 7600, 6520), game(game),
                                         restoreMouse(!zinput->GetDeviceEnabled(zINPUT_MOUSE)) {
@@ -461,6 +454,12 @@ public:
         InsertBack(zSTRING("OQI_JOURNAL.TGA"));
         SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
         SetTransparency(205);
+        cursorView.InsertBack(zSTRING("OQI_CURSOR.TGA"));
+        cursorView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
+        cursorView.SetTransparency(255);
+        scrollView.InsertBack(zSTRING("OQI_SCROLL.TGA"));
+        scrollView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
+        scrollView.SetTransparency(255);
         // Use the engine pause with its built-in message suppressed.
         game.Pause();
         if (restoreMouse) zinput->SetDeviceEnabled(zINPUT_MOUSE, TRUE);
@@ -477,36 +476,55 @@ public:
     }
 
     JournalMouse ReadMouse() {
+        listScrollBar.reset();
         hintScrollBar.reset();
         int screenWidth, screenHeight;
         screen->GetPixelSize(screenWidth, screenHeight);
-        if (screenWidth <= 0 || screenHeight <= 0 || (hWndApp && GetForegroundWindow() != hWndApp)) {
-            cursorActive = false;
-            wheelRemainder = 0.0f;
-            hintGrabOffset.reset();
-            return {};
-        }
+        if (screenWidth <= 0 || screenHeight <= 0) return {};
         if (!cursorStarted) {
             cursorX = screenWidth * 0.5f;
             cursorY = screenHeight * 0.5f;
             cursorStarted = true;
         }
 
-        const bool down = zinput->GetMouseButtonPressedLeft() != 0;
+        DWORD foregroundProcess = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &foregroundProcess);
+        if (foregroundProcess != GetCurrentProcessId()) {
+            cursorActive = false;
+            havePointer = false;
+            wheelRemainder = 0.0f;
+            listGrabOffset.reset();
+            hintGrabOffset.reset();
+            return {};
+        }
+
+        const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
         const bool pressed = cursorActive && down && !mouseDown;
+        POINT pointer{};
+        const bool gotPointer = GetCursorPos(&pointer) != 0;
         if (cursorActive) {
-            // ZenGin exposes relative motion and the current DirectInput wheel delta.
             float dx = 0.0f, dy = 0.0f, wheel = 0.0f;
             int flipX = FALSE, flipY = FALSE;
             zinput->GetMousePos(dx, dy, wheel);
             zinput->GetMouseFlipXY(flipX, flipY);
-            cursorX += flipX ? -dx : dx;
-            cursorY += flipY ? -dy : dy;
+            // Use desktop motion when the renderer leaves relative input idle.
+            if (dx == 0.0f && dy == 0.0f && gotPointer && havePointer) {
+                cursorX += static_cast<float>(pointer.x - lastPointer.x);
+                cursorY += static_cast<float>(pointer.y - lastPointer.y);
+            } else {
+                cursorX += flipX ? -dx : dx;
+                cursorY += flipY ? -dy : dy;
+            }
             wheelRemainder += wheel;
         }
+        havePointer = gotPointer;
+        lastPointer = pointer;
         cursorActive = true;
         mouseDown = down;
-        if (!down) hintGrabOffset.reset();
+        if (!down) {
+            listGrabOffset.reset();
+            hintGrabOffset.reset();
+        }
         cursorX = std::clamp(cursorX, 0.0f, static_cast<float>(screenWidth - 1));
         cursorY = std::clamp(cursorY, 0.0f, static_cast<float>(screenHeight - 1));
         const int notches = static_cast<int>(wheelRemainder / WHEEL_DELTA);
@@ -518,16 +536,19 @@ public:
     }
 
     void Blit() override {
-        // Apply the view's opacity even if the preceding draw used a constant alpha factor.
         const auto previousSource = zrenderer->GetAlphaBlendSource();
         zrenderer->SetAlphaBlendSource(zRND_ALPHA_SOURCE_MATERIAL);
         zCView::Blit();
-        zrenderer->SetAlphaBlendSource(previousSource);
-        if (hintScrollBar) {
-            DrawScrollRect(hintScrollBar->track, 0xFF5C4A33);
-            DrawScrollRect(hintScrollBar->thumb, hintScrollBar->highlighted ? 0xFFFFD9A1 : 0xFFC29E64);
+        for (const auto* bar : {&listScrollBar, &hintScrollBar}) {
+            if (*bar) {
+                DrawScrollRect((*bar)->track, 0xFF594B39);
+                DrawScrollRect((*bar)->thumb, (*bar)->highlighted ? 0xFFFFD9A1 : 0xFFC7A46C);
+            }
         }
-        if (cursorActive) DrawCursor();
+        if (cursorStarted) {
+            DrawSprite(cursorView, static_cast<int>(cursorX) - 1, static_cast<int>(cursorY) - 1, 40, 40, 0xFFFFFFFF);
+        }
+        zrenderer->SetAlphaBlendSource(previousSource);
     }
 
     int HandleEvent(int key) override {
@@ -763,6 +784,33 @@ static const wchar_t* QuestStatus(const QuestItem& item) {
     return StatusText(status);
 }
 
+static std::optional<JournalView::ScrollBar> UpdateScrollBar(
+        const JournalRect& track, int count, int capacity, int& offset,
+        std::optional<int>& grab, const JournalMouse& mouse) {
+    const int maxOffset = (std::max)(0, count - capacity);
+    offset = std::clamp(offset, 0, maxOffset);
+    if (!maxOffset || track.height < 2) {
+        grab.reset();
+        return std::nullopt;
+    }
+    const int thumbHeight = std::clamp(track.height * capacity / count,
+                                       (std::max)(1, track.height / (capacity * 2)), track.height - 1);
+    const int travel = track.height - thumbHeight;
+    const int thumbY = track.y + (travel * offset + maxOffset / 2) / maxOffset;
+    const bool hovered = mouse.Over(track);
+    if (mouse.pressed && hovered) {
+        grab = mouse.y >= thumbY && mouse.y < thumbY + thumbHeight
+            ? mouse.y - thumbY : thumbHeight / 2;
+    }
+    if (grab) {
+        const int position = std::clamp(mouse.y - track.y - *grab, 0, travel);
+        offset = (position * maxOffset + travel / 2) / travel;
+    }
+    return JournalView::ScrollBar{track,
+        {track.x, track.y + (travel * offset + maxOffset / 2) / maxOffset, track.width, thumbHeight},
+        hovered || grab.has_value()};
+}
+
 static void PaintDetails(const JournalLayout& ui, std::size_t id, const JournalInput& input,
                          const JournalMouse& mouse) {
     const auto& item = questItems[id];
@@ -812,28 +860,12 @@ static void PaintDetails(const JournalLayout& ui, std::size_t id, const JournalI
     const int available = 5 + ui.rows - row;
     const int count = static_cast<int>(lines.size());
     const int capacity = count > available && available > 1 ? available - 1 : available;
-    const int maxOffset = (std::max)(0, count - capacity);
     const JournalRect details{ui.details, ui.Y(4), width, ui.footer - ui.Y(4)};
     const int wheel = mouse.Over(details) ? mouse.wheel * wheelLines : 0;
-    hintOffset = std::clamp(hintOffset + input.hintLines + input.hintPages * capacity - wheel, 0, maxOffset);
-    if (maxOffset > 0) {
-        const JournalRect track{ui.Right() - barWidth, ui.Y(row), barWidth, ui.line * capacity};
-        const int thumbHeight = std::clamp(track.height * capacity / count, ui.line / 2, track.height - 1);
-        const int travel = track.height - thumbHeight;
-        int thumbY = track.y + travel * hintOffset / maxOffset;
-        if (mouse.pressed && mouse.Over(track)) {
-            const bool onThumb = mouse.y >= thumbY && mouse.y < thumbY + thumbHeight;
-            journal->hintGrabOffset = onThumb ? mouse.y - thumbY : thumbHeight / 2;
-        }
-        if (journal->hintGrabOffset) {
-            const int position = std::clamp(mouse.y - track.y - *journal->hintGrabOffset, 0, travel);
-            hintOffset = (position * maxOffset + travel / 2) / travel;
-            thumbY = track.y + travel * hintOffset / maxOffset;
-        }
-        journal->hintScrollBar = JournalView::ScrollBar{
-            track, {track.x, thumbY, track.width, thumbHeight},
-            mouse.Over(track) || journal->hintGrabOffset.has_value()};
-    }
+    hintOffset += input.hintLines + input.hintPages * capacity - wheel;
+    const JournalRect track{ui.Right() - barWidth, ui.Y(row), barWidth, ui.line * capacity};
+    journal->hintScrollBar = UpdateScrollBar(track, count, capacity, hintOffset,
+                                            journal->hintGrabOffset, mouse);
     const int end = (std::min)(hintOffset + capacity, count);
     for (int i = hintOffset; i < end; ++i) {
         Text(ui.details, ui.Y(row++), lines[i], textWidth);
@@ -888,6 +920,7 @@ static void PaintQuests(const JournalLayout& ui, const JournalInput& input, cons
     }
     if (visible.empty()) {
         HideHint();
+        journal->listGrabOffset.reset();
         Text(ui.margin, ui.Y(5), Russian(L"Для этого фильтра заданий нет."), ui.Right() - ui.margin);
         return;
     }
@@ -895,7 +928,7 @@ static void PaintQuests(const JournalLayout& ui, const JournalInput& input, cons
     const int count = static_cast<int>(visible.size());
     const int maxFirst = (std::max)(0, count - ui.rows);
     firstVisible = std::clamp(firstVisible, 0, maxFirst);
-    const JournalRect list{ui.margin, ui.Y(5), ui.details - ui.margin, ui.rows * ui.line};
+    const JournalRect list{ui.margin, ui.Y(5), ui.listRight - ui.margin, ui.rows * ui.line};
     const int rowUnderMouse = mouse.Over(list) ? firstVisible + (mouse.y - list.y) / ui.line : count;
     const bool clickedRow = mouse.pressed && rowUnderMouse < count;
     const int keyboardMove = input.selection + input.pages * ui.rows;
@@ -906,9 +939,12 @@ static void PaintQuests(const JournalLayout& ui, const JournalInput& input, cons
     if (keyboardMove && !clickedRow) {
         firstVisible = std::clamp(firstVisible, (std::max)(0, selected - ui.rows + 1), selected);
     }
-    const JournalRect listColumn{list.x, ui.Y(4), list.width, ui.footer - ui.Y(4)};
+    const int barWidth = journal->anx(10);
+    const JournalRect track{(ui.listRight + ui.details - barWidth) / 2, list.y, barWidth, list.height};
+    const JournalRect listColumn{list.x, ui.Y(4), ui.details - list.x, ui.footer - ui.Y(4)};
     if (mouse.Over(listColumn)) firstVisible -= mouse.wheel * wheelLines;
-    firstVisible = std::clamp(firstVisible, 0, maxFirst);
+    journal->listScrollBar = UpdateScrollBar(track, count, ui.rows, firstVisible,
+                                            journal->listGrabOffset, mouse);
     const int end = (std::min)(firstVisible + ui.rows, count);
     const auto indicator = std::to_string(firstVisible + 1) + "-" + std::to_string(end)
         + " / " + std::to_string(count);
@@ -980,6 +1016,7 @@ static Key hintKey{KEY_H}, locationKey{KEY_T};
 
 static void ResetQuestSelection() {
     selected = firstVisible = 0;
+    if (journal) journal->listGrabOffset.reset();
     HideHint();
 }
 
@@ -1015,6 +1052,7 @@ static void Loop() {
     input.hint = input.hint || hintPressed;
     if (diagnosticPressed) {
         diagnostics = !diagnostics;
+        journal->listGrabOffset.reset();
         HideHint();
         input = {};
         if (diagnostics) RefreshRaw();

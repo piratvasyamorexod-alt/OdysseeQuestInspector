@@ -27,7 +27,9 @@ foreach ($source in $sources) {
 }
 $textureDir = Join-Path $template "vdf/_Work/Data/Textures/_Compiled"
 New-Item -ItemType Directory -Force -Path $textureDir | Out-Null
-Copy-Item (Join-Path $root "textures/OQI_JOURNAL-C.TEX") $textureDir -Force
+foreach ($texture in @("OQI_JOURNAL-C.TEX", "OQI_CURSOR-C.TEX", "OQI_SCROLL-C.TEX")) {
+  Copy-Item (Join-Path $root "textures/$texture") $textureDir -Force
+}
 $cmake = Join-Path $template "CMakeLists.txt"
 $body = [IO.File]::ReadAllText($cmake)
 $body = $body.Replace("project(UnionPlugin", "project(OdysseeQuestInspector")
