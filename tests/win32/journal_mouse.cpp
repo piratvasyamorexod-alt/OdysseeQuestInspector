@@ -47,11 +47,13 @@ int main() {
           "Closing journal restores the existing recipient and flags");
 
     Check(journal.Open(previous), "Reopen journal mouse window");
-    RegisterMouse(previous, RIDEV_INPUTSINK | RIDEV_DEVNOTIFY);
+    RegisterMouse(previous, 0);
+    const auto intervening = GetMouseRegistration();
+    Check(intervening && intervening->hwndTarget == previous, "Read the intervening registration");
     Check(!journal.OwnsRegistration(), "Detect an intervening recipient");
     journal.Close();
     restored = GetMouseRegistration();
-    Check(restored && restored->hwndTarget == previous && restored->dwFlags == (RIDEV_INPUTSINK | RIDEV_DEVNOTIFY),
+    Check(restored && restored->hwndTarget == previous && restored->dwFlags == intervening->dwFlags,
           "Keep the intervening recipient and flags");
 
     RegisterMouse(nullptr, RIDEV_REMOVE);
