@@ -498,7 +498,8 @@ public:
             return {};
         }
 
-        const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0
+            || zinput->GetMouseButtonPressedLeft() != 0;
         const bool pressed = cursorActive && down && !mouseDown;
         POINT pointer{};
         const bool gotPointer = GetCursorPos(&pointer) != 0;
