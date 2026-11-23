@@ -77,11 +77,10 @@ int main() {
           "Center the cursor in the focused client area");
     const auto beforeCursor = cursorMessages;
     SendMessageW(game, WM_SETCURSOR, reinterpret_cast<WPARAM>(game), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
-    CURSORINFO cursor{};
-    cursor.cbSize = sizeof(cursor);
-    Check(cursorMessages == beforeCursor && GetCursorInfo(&cursor)
-              && (cursor.flags & CURSOR_SHOWING) && cursor.hCursor,
-          "Keep the system pointer visible when the game would hide it");
+    Check(cursorMessages == beforeCursor, "Intercept the game's request to hide the system pointer");
+    Check(GetCursor() == LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)), "Set the system arrow in the game thread");
+    ShowCursor(FALSE);
+    Check(ShowCursor(TRUE) >= 0, "Enable the system pointer in the game thread");
 
     OQIMouse::MouseEvents mouse;
     Check(mouse.Start(game), "Listen to Windows mouse input");
