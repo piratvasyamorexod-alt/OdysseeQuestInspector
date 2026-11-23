@@ -52,6 +52,8 @@ static void WaitForPackets(const OQIMouse::MouseEvents& mouse, unsigned expected
 
 int main() {
     auto instance = GetModuleHandleW(nullptr);
+    Check(FindResourceW(instance, L"OQI_JOURNAL_CURSOR", MAKEINTRESOURCEW(12)) != nullptr,
+          "Link the named cursor group into the executable");
     const auto journalCursor = LoadCursorW(instance, L"OQI_JOURNAL_CURSOR");
     Check(journalCursor && journalCursor != LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)),
           "Load the journal cursor resource");
