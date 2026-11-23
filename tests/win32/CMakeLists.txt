@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.21)
+project(JournalMouseTests LANGUAGES CXX)
+enable_testing()
+add_executable(journal-mouse-test journal_mouse.cpp)
+target_compile_features(journal-mouse-test PRIVATE cxx_std_17)
+add_test(NAME journal-mouse-registration COMMAND journal-mouse-test)

@@ -21,7 +21,7 @@ git -C $template checkout --detach $templateCommit
 Check "Failed to select pinned Union template"
 git -C $template submodule update --init --recursive
 Check "Failed to fetch Union dependencies"
-$sources = @("Plugin.ipp", "quest_manifest.hpp", "kondehra.hpp", "tamora.hpp", "tamora_rules.hpp", "albatros.hpp", "albatros_rules.hpp", "departure.hpp", "departure_rules.hpp")
+$sources = @("Plugin.ipp", "journal_mouse_win32.hpp", "quest_manifest.hpp", "kondehra.hpp", "tamora.hpp", "tamora_rules.hpp", "albatros.hpp", "albatros_rules.hpp", "departure.hpp", "departure_rules.hpp")
 foreach ($source in $sources) {
   Copy-Item (Join-Path $root "src/$source") (Join-Path $template "src/$source") -Force
 }
@@ -33,7 +33,7 @@ foreach ($texture in @("OQI_JOURNAL-C.TEX", "OQI_SCROLL-C.TEX", "OQI_CURSOR-C.TE
 $cmake = Join-Path $template "CMakeLists.txt"
 $body = [IO.File]::ReadAllText($cmake)
 $body = $body.Replace("project(UnionPlugin", "project(OdysseeQuestInspector")
-$body = $body.Replace('VERSION ${PROJECT_VERSION}', 'VERSION 1.0.3.0')
+$body = $body.Replace('VERSION ${PROJECT_VERSION}', 'VERSION 1.0.4.0')
 if ($body -notmatch "project\(OdysseeQuestInspector") { throw "Upstream CMake file changed" }
 [IO.File]::WriteAllText($cmake, $body)
 cmake -S $template -B $build -G "Visual Studio 17 2022" -A Win32 -DGOTHIC_API_G2A=ON

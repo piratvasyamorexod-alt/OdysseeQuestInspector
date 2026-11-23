@@ -28,6 +28,14 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: Test raw mouse window on Windows
+        shell: powershell
+        run: |
+          cmake -S tests/win32 -B win32-mouse-test -G "Visual Studio 17 2022" -A Win32
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build win32-mouse-test --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir win32-mouse-test -C Release --output-on-failure
       - name: Compile G2A Union plugin and VDF
         shell: powershell
         run: ./Build-Windows.ps1
