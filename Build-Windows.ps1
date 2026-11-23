@@ -33,7 +33,7 @@ foreach ($texture in @("OQI_JOURNAL-C.TEX", "OQI_SCROLL-C.TEX")) {
 $cmake = Join-Path $template "CMakeLists.txt"
 $body = [IO.File]::ReadAllText($cmake)
 $body = $body.Replace("project(UnionPlugin", "project(OdysseeQuestInspector")
-$body = $body.Replace('VERSION ${PROJECT_VERSION}', 'VERSION 1.0.1.0')
+$body = $body.Replace('VERSION ${PROJECT_VERSION}', 'VERSION 1.0.2.0')
 if ($body -notmatch "project\(OdysseeQuestInspector") { throw "Upstream CMake file changed" }
 [IO.File]::WriteAllText($cmake, $body)
 cmake -S $template -B $build -G "Visual Studio 17 2022" -A Win32 -DGOTHIC_API_G2A=ON
