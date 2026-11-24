@@ -33,7 +33,7 @@ foreach ($texture in @("OQI_JOURNAL-C.TEX", "OQI_SCROLL-C.TEX", "OQI_CURSOR-C.TE
 $cmake = Join-Path $template "CMakeLists.txt"
 $body = [IO.File]::ReadAllText($cmake)
 $body = $body.Replace("project(UnionPlugin", "project(OdysseeQuestInspector")
-$body = $body.Replace('VERSION ${PROJECT_VERSION}', 'VERSION 1.0.8.0')
+$body = $body.Replace('VERSION ${PROJECT_VERSION}', 'VERSION 1.0.9.0')
 if ($body -notmatch "project\(OdysseeQuestInspector") { throw "Upstream CMake file changed" }
 $body += "`r`ntarget_sources(OdysseeQuestInspector PRIVATE src/journal_cursor.rc)`r`n"
 [IO.File]::WriteAllText($cmake, $body)

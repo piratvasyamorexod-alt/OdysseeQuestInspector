@@ -474,11 +474,14 @@ class JournalView : public zCView {
         };
     }
 
-    void DrawScrollRect(const JournalRect& rect, unsigned long ink) {
+    void DrawScrollRect(const JournalRect& rect, int insetPixels, unsigned long ink) {
         int x, y;
         GetPixelPos(x, y);
-        DrawSprite(scrollView, x + nax(rect.x), y + nay(rect.y),
-                   nax(rect.x + rect.width) - nax(rect.x),
+        const int left = nax(rect.x);
+        const int width = nax(rect.x + rect.width) - left;
+        if (width <= 0) return;
+        const int inset = (std::min)(insetPixels, (width - 1) / 2);
+        DrawSprite(scrollView, x + left + inset, y + nay(rect.y), width - 2 * inset,
                    nay(rect.y + rect.height) - nay(rect.y), ink);
     }
 
@@ -496,7 +499,7 @@ public:
         SetFont(screen->GetFont());
         InsertBack(zSTRING("OQI_JOURNAL.TGA"));
         SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
-        SetTransparency(205);
+        SetTransparency(213);
         scrollView.InsertBack(zSTRING("OQI_SCROLL.TGA"));
         scrollView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
         scrollView.SetTransparency(255);
@@ -579,7 +582,7 @@ public:
 
     std::string MouseDiagnostics() const {
         char label[96];
-        std::snprintf(label, sizeof(label), "1.0.8  %s  X%d Y%d  P%u C%u W%u",
+        std::snprintf(label, sizeof(label), "1.0.9  %s  X%d Y%d  P%u C%u W%u",
                       mouseEvents.IsListening() ? "WIN" : "ZEN", cursorX, cursorY,
                       mouseEvents.Count(), mouseClicks, mouseWheelSteps);
         return label;
@@ -616,8 +619,8 @@ public:
         zCView::Blit();
         for (const auto* bar : {&listScrollBar, &hintScrollBar}) {
             if (*bar) {
-                DrawScrollRect((*bar)->track, 0xFF594B39);
-                DrawScrollRect((*bar)->thumb, (*bar)->highlighted ? 0xFFFFD9A1 : 0xFFC7A46C);
+                DrawScrollRect((*bar)->track, 3, 0xFF4A4033);
+                DrawScrollRect((*bar)->thumb, 2, (*bar)->highlighted ? 0xFFE4C38D : 0xFFB4996B);
             }
         }
         if (cursorClient && OQIMouse::HasFocus(hWndApp)) {
@@ -711,8 +714,8 @@ struct JournalLayout {
 
 enum class Ink : unsigned long {
     Paper = 0xFFFFFFFF,
-    Muted = 0xFFF5EEE4,
-    Gold = 0xFFFFD9A1,
+    Muted = 0xFFF3EADD,
+    Gold = 0xFFFFE2B6,
     Done = 0xFFDDF7C7,
     Missed = 0xFFFFC7BE,
 };
@@ -746,7 +749,7 @@ static void Text(int x, int y, const std::string& text, int width, Ink ink = Ink
     journal->CreateText(x, y, line, 0.0f, color, 0, 1);
     // The engine draws the most recently added text first.
     zCOLOR shadow;
-    shadow.dword = 0xFF050709;
+    shadow.dword = 0xFF080705;
     journal->CreateText(x + journal->anx(2), y + journal->any(2), line, 0.0f, shadow, 0, 1);
 }
 
@@ -1164,7 +1167,7 @@ static void Loop() {
     journal->ClrPrintwin();
     const JournalLayout ui;
     const auto mouse = journal->ReadMouse(input);
-    const std::string status = diagnostics ? journal->MouseDiagnostics() : "1.0.8";
+    const std::string status = diagnostics ? journal->MouseDiagnostics() : "1.0.9";
     const int versionWidth = TextWidth(status);
     Text(ui.Right() - versionWidth, ui.footer + ui.line, status, versionWidth, Ink::Muted);
     const auto closeLabel = Russian(L"[ Закрыть ]");
