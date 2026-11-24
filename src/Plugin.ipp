@@ -401,6 +401,18 @@ struct JournalRect {
     }
 };
 
+static constexpr char version[] = "1.1.0";
+static constexpr unsigned long lineInk = 0xFF655740;
+static constexpr unsigned long bronzeInk = 0xFFDDB67D;
+
+static JournalRect JournalBounds() {
+    const int width = (std::min)(screen->psizex * 92 / 100, screen->psizey * 114 / 100);
+    const int height = screen->psizey * 70 / 100;
+    return {screen->anx((screen->psizex - width) / 2),
+            screen->any((screen->psizey - height) / 2),
+            screen->anx(width), screen->any(height)};
+}
+
 struct JournalMouse {
     int x = 0, y = 0, wheel = 0;
     bool active = false, pressed = false;
@@ -474,15 +486,32 @@ class JournalView : public zCView {
         };
     }
 
-    void DrawScrollRect(const JournalRect& rect, int insetPixels, unsigned long ink) {
-        int x, y;
-        GetPixelPos(x, y);
-        const int left = nax(rect.x);
-        const int width = nax(rect.x + rect.width) - left;
-        if (width <= 0) return;
-        const int inset = (std::min)(insetPixels, (width - 1) / 2);
-        DrawSprite(scrollView, x + left + inset, y + nay(rect.y), width - 2 * inset,
-                   nay(rect.y + rect.height) - nay(rect.y), ink);
+    void DrawRule(const JournalRect& rect, int inset, unsigned long ink) {
+        const int x = nax(rect.x);
+        const int y = nay(rect.y);
+        const int width = nax(rect.x + rect.width) - x - 2 * inset;
+        const int height = nay(rect.y + rect.height) - y;
+        if (width <= 0 || height <= 0) return;
+        DrawSprite(scrollView, pposx + x + inset, pposy + y, width, height, ink);
+    }
+
+    JournalView(oCGame& game, JournalRect box)
+        : zCView(box.x, box.y, box.x + box.width, box.y + box.height), game(game) {
+        SetFont(screen->GetFont());
+        InsertBack(zSTRING("OQI_JOURNAL.TGA"));
+        SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
+        SetTransparency(248);
+        scrollView.InsertBack(zSTRING("OQI_SCROLL.TGA"));
+        scrollView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
+        scrollView.SetTransparency(255);
+        cursorView.InsertBack(zSTRING("OQI_CURSOR.TGA"));
+        cursorView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
+        cursorView.SetTransparency(255);
+        game.Pause();
+        screen->InsertItem(this);
+        SetEnableHandleEvent(TRUE);
+        SetHandleEventTop();
+        TakeInput();
     }
 
 public:
@@ -495,24 +524,14 @@ public:
     std::optional<ScrollBar> listScrollBar, hintScrollBar;
     std::optional<int> listGrabOffset, hintGrabOffset;
 
-    explicit JournalView(oCGame& game) : zCView(296, 610, 7600, 6520), game(game) {
-        SetFont(screen->GetFont());
-        InsertBack(zSTRING("OQI_JOURNAL.TGA"));
-        SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
-        SetTransparency(213);
-        scrollView.InsertBack(zSTRING("OQI_SCROLL.TGA"));
-        scrollView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
-        scrollView.SetTransparency(255);
-        cursorView.InsertBack(zSTRING("OQI_CURSOR.TGA"));
-        cursorView.SetAlphaBlendFunc(zRND_ALPHA_FUNC_BLEND);
-        cursorView.SetTransparency(255);
-        // Use the engine pause with its built-in message suppressed.
-        game.Pause();
-        screen->InsertItem(this);
-        SetEnableHandleEvent(TRUE);
-        SetHandleEventTop();
-        TakeInput();
-    }
+    struct Rule {
+        JournalRect bounds;
+        unsigned long color;
+    };
+
+    std::vector<Rule> rules;
+
+    explicit JournalView(oCGame& game) : JournalView(game, JournalBounds()) {}
 
     ~JournalView() override {
         SetEnableHandleEvent(FALSE);
@@ -582,7 +601,7 @@ public:
 
     std::string MouseDiagnostics() const {
         char label[96];
-        std::snprintf(label, sizeof(label), "1.0.9  %s  X%d Y%d  P%u C%u W%u",
+        std::snprintf(label, sizeof(label), "%s  %s  X%d Y%d  P%u C%u W%u", version,
                       mouseEvents.IsListening() ? "WIN" : "ZEN", cursorX, cursorY,
                       mouseEvents.Count(), mouseClicks, mouseWheelSteps);
         return label;
@@ -617,10 +636,13 @@ public:
         const auto previousSource = zrenderer->GetAlphaBlendSource();
         zrenderer->SetAlphaBlendSource(zRND_ALPHA_SOURCE_MATERIAL);
         zCView::Blit();
+        for (const auto& rule : rules) DrawRule(rule.bounds, 0, rule.color);
         for (const auto* bar : {&listScrollBar, &hintScrollBar}) {
             if (*bar) {
-                DrawScrollRect((*bar)->track, 3, 0xFF4A4033);
-                DrawScrollRect((*bar)->thumb, 2, (*bar)->highlighted ? 0xFFE4C38D : 0xFFB4996B);
+                const int width = nax((*bar)->track.width);
+                DrawRule((*bar)->track, (std::max)(0, (width - 2) / 2), lineInk);
+                DrawRule((*bar)->thumb, (std::max)(0, (width - 4) / 2),
+                         (*bar)->highlighted ? 0xFFFFEAC4 : bronzeInk);
             }
         }
         if (cursorClient && OQIMouse::HasFocus(hWndApp)) {
@@ -686,39 +708,42 @@ static void CloseJournal() {
 }
 
 struct JournalLayout {
-    int width;
-    int height;
-    int line;
-    int margin;
-    int listRight;
-    int details;
-    int footer;
-    int rows;
+    int width, height, line, margin, top, split, listRight, details, footer, rows;
 
     JournalLayout() {
-        int pixelsX, pixelsY;
-        journal->GetPixelSize(pixelsX, pixelsY);
-        width = journal->anx(pixelsX);
-        height = journal->any(pixelsY);
-        line = (std::max)(height / 21, journal->any(journal->GetFont()->GetFontY() + 4));
-        margin = width * 3 / 100;
-        listRight = width * 55 / 100;
-        details = width * 59 / 100;
-        footer = height - 2 * line - height / 50;
-        rows = (std::max)(0, (footer - height / 30) / line - 5);
+        width = journal->anx(journal->psizex);
+        height = journal->any(journal->psizey);
+        const int padding = std::clamp(screen->psizey / 50, 12, 26);
+        margin = (std::max)(1, journal->anx(padding));
+        top = journal->any(padding);
+        line = (std::max)(1, journal->any(journal->GetFont()->GetFontY() + 4));
+        split = width * 53 / 100;
+        listRight = split - margin;
+        details = split + margin;
+        footer = height - top - 2 * line;
+        rows = (std::max)(0, (footer - Y(5) - line / 3) / line);
     }
 
-    int Y(int row) const { return height / 30 + row * line; }
+    int Y(int row) const { return top + row * line; }
     int Right() const { return width - margin; }
 };
 
 enum class Ink : unsigned long {
-    Paper = 0xFFFFFFFF,
-    Muted = 0xFFF3EADD,
-    Gold = 0xFFFFE2B6,
-    Done = 0xFFDDF7C7,
-    Missed = 0xFFFFC7BE,
+    Paper = 0xFFF0DFBB,
+    Bright = 0xFFFFEAC4,
+    Muted = 0xFFD6C6A5,
+    Gold = bronzeInk,
+    Done = 0xFFDCEAB9,
+    Missed = 0xFFFFC2A7,
 };
+
+static void Rule(int x, int y, int width, int height, unsigned long color = lineInk) {
+    journal->rules.push_back({{x, y, width, height}, color});
+}
+
+static void HorizontalRule(int left, int right, int y, unsigned long color = lineInk, int pixels = 1) {
+    Rule(left, y, right - left, (std::max)(1, journal->any(pixels)), color);
+}
 
 static void ReplaceYoForJournalFont(std::string& text) {
     // The Russian journal font lacks the Windows-1251 glyphs for Ё and ё.
@@ -749,8 +774,8 @@ static void Text(int x, int y, const std::string& text, int width, Ink ink = Ink
     journal->CreateText(x, y, line, 0.0f, color, 0, 1);
     // The engine draws the most recently added text first.
     zCOLOR shadow;
-    shadow.dword = 0xFF080705;
-    journal->CreateText(x + journal->anx(2), y + journal->any(2), line, 0.0f, shadow, 0, 1);
+    shadow.dword = 0xFF0A0907;
+    journal->CreateText(x + journal->anx(1), y + journal->any(1), line, 0.0f, shadow, 0, 1);
 }
 
 static std::vector<std::string> WrapText(std::string text, int width) {
@@ -830,13 +855,18 @@ static JournalRect TabBounds(const JournalLayout& ui, int tab) {
 }
 
 static void PaintTabs(const JournalLayout& ui, const JournalMouse& mouse) {
+    HorizontalRule(ui.margin, ui.Right(), ui.Y(2) - journal->any(2));
     for (int i = 0; i < static_cast<int>(std::size(tabs)); ++i) {
         const auto name = Russian(catalogs[static_cast<std::size_t>(tabs[i])].name);
         const bool active = tabs[i] == SelectedLocation();
-        const auto label = active ? "[ " + name + " ]" : name;
         const auto cell = TabBounds(ui, i);
-        Text(cell.x, cell.y, label, cell.width - ui.margin / 2,
-             active || mouse.Over(cell) ? Ink::Gold : Ink::Muted);
+        const int labelX = cell.x + (std::max)(0, (cell.width - TextWidth(name)) / 2);
+        Text(labelX, cell.y, name, cell.x + cell.width - labelX,
+             active ? Ink::Bright : mouse.Over(cell) ? Ink::Bright : Ink::Gold);
+        if (active) {
+            HorizontalRule(cell.x + ui.margin / 3, cell.x + cell.width - ui.margin / 3,
+                           cell.y + ui.line - journal->any(2), bronzeInk, 3);
+        }
     }
 }
 
@@ -856,7 +886,7 @@ static void PaintProgress(const JournalLayout& ui) {
         line += Russian(L"  ·  Неясно ") + std::to_string(progress.unknown);
         line += Russian(L"  ·  Другой этап ") + std::to_string(progress.deferred);
     }
-    Text(ui.margin, ui.Y(2), line, ui.Right() - ui.margin, Ink::Muted);
+    Text(ui.margin, ui.Y(2) + journal->any(3), line, ui.Right() - ui.margin, Ink::Paper);
 }
 
 static std::string QuestTitle(const QuestItem& item) {
@@ -902,33 +932,34 @@ static std::optional<JournalView::ScrollBar> UpdateScrollBar(
         hovered || grab.has_value()};
 }
 
+static Ink QuestInk(const QuestItem& item);
+
 static void PaintDetails(const JournalLayout& ui, std::size_t id, const JournalInput& input,
                          const JournalMouse& mouse) {
     const auto& item = questItems[id];
     const auto& quest = SelectedCatalog().entries[id];
     const int width = ui.Right() - ui.details;
-    Text(ui.details, ui.Y(4), Russian(L"Выбранное задание"), width, Ink::Muted);
+    Text(ui.details, ui.Y(4), Russian(L"Выбранное задание"), width, Ink::Gold);
 
     int row = 5;
     for (const auto& line : WrapText(QuestTitle(item), width)) {
         if (row >= 5 + ui.rows) return;
-        Text(ui.details, ui.Y(row++), line, width);
+        Text(ui.details, ui.Y(row++), line, width, Ink::Bright);
     }
     if (row >= 5 + ui.rows) return;
-    Text(ui.details, ui.Y(row++), Russian(QuestStatus(item)), width, Ink::Gold);
+    Text(ui.details, ui.Y(row++), Russian(QuestStatus(item)), width, QuestInk(item));
     if (row >= 5 + ui.rows) return;
 
     const auto button = [](bool open) {
-        return "[ " + Russian(open ? L"Скрыть подсказку" : L"Показать подсказку") + " ]";
+        return Russian(open ? L"Скрыть подсказку" : L"Показать подсказку") + "   Enter";
     };
-    const JournalRect buttonBounds{ui.details, ui.Y(row),
-        (std::min)(width, TextWidth(button(revealedQuest.has_value()))), ui.line};
+    const JournalRect buttonBounds{ui.details, ui.Y(row), width, ui.line};
     if (input.hint || (mouse.pressed && mouse.Over(buttonBounds))) {
         if (revealedQuest) HideHint();
         else revealedQuest = id;
     }
-    Text(ui.details, ui.Y(row++), button(revealedQuest.has_value()) + "  Enter", width,
-         mouse.Over(buttonBounds) ? Ink::Gold : Ink::Muted);
+    Text(ui.details, ui.Y(row++), button(revealedQuest.has_value()), width,
+         mouse.Over(buttonBounds) ? Ink::Bright : Ink::Gold);
     if (!revealedQuest || row >= 5 + ui.rows) return;
 
     const int barWidth = journal->anx(10);
@@ -971,17 +1002,17 @@ static void PaintDetails(const JournalLayout& ui, std::size_t id, const JournalI
 static Ink QuestInk(const QuestItem& item) {
     if (item.result.status == Status::Done || (currentVisit && item.step == Step::Done)) return Ink::Done;
     if (item.result.status == Status::Missed || (currentVisit && item.step == Step::Missed)) return Ink::Missed;
-    return Ink::Muted;
+    return Ink::Paper;
 }
 
 static void PaintQuests(const JournalLayout& ui, const JournalInput& input, const JournalMouse& mouse) {
     const auto& catalog = SelectedCatalog();
     Text(ui.margin, ui.Y(0), Russian(L"Журнал экспедиции · Глава 2"), ui.Right() - ui.margin, Ink::Gold);
     PaintTabs(ui, mouse);
-    Text(ui.margin, ui.footer, Russian(L"Вверх/вниз · Выбор    PgUp/PgDn · Страница    Влево/вправо · Локация"),
+    Text(ui.margin, ui.footer, Russian(L"Стрелки   Выбор и локация     PgUp/PgDn   Страница"),
          ui.Right() - ui.margin, Ink::Muted);
-    Text(ui.margin, ui.footer + ui.line, Russian(L"Esc · Закрыть    Shift+F · Фильтр    Shift+V · Перед отплытием    Shift+D · Флаги"),
-         ui.Right() - ui.margin, Ink::Muted);
+    Text(ui.margin, ui.footer + ui.line, Russian(L"Shift+F   Фильтр     Shift+V   Перед отплытием     Shift+D   Флаги"),
+         ui.Right() - ui.margin - TextWidth(version) - ui.margin, Ink::Muted);
     if (!verifiedBuild) {
         Text(ui.margin, ui.Y(2), Russian(L"Скрипты русской версии 2.7.5.2 не распознаны."), ui.Right() - ui.margin);
         return;
@@ -997,6 +1028,8 @@ static void PaintQuests(const JournalLayout& ui, const JournalInput& input, cons
     Text(ui.margin, ui.Y(3), mode + Russian(L"  ·  Фильтр: ") + Russian(filter), ui.Right() - ui.margin);
     if (beforeDeparture && !currentVisit) return;
     if (ui.rows == 0) return;
+    HorizontalRule(ui.margin, ui.Right(), ui.Y(4) - journal->any(3));
+    Rule(ui.split, ui.Y(4), (std::max)(1, journal->anx(1)), ui.footer - ui.Y(4) - ui.line / 3);
 
     std::vector<std::size_t> visible;
     for (std::size_t i = 0; i < questItems.size(); ++i) {
@@ -1031,7 +1064,7 @@ static void PaintQuests(const JournalLayout& ui, const JournalInput& input, cons
         firstVisible = std::clamp(firstVisible, (std::max)(0, selected - ui.rows + 1), selected);
     }
     const int barWidth = journal->anx(10);
-    const JournalRect track{(ui.listRight + ui.details - barWidth) / 2, list.y, barWidth, list.height};
+    const JournalRect track{ui.split - barWidth - journal->anx(4), list.y, barWidth, list.height};
     const JournalRect listColumn{list.x, ui.Y(4), ui.details - list.x, ui.footer - ui.Y(4)};
     if (mouse.Over(listColumn)) firstVisible -= mouse.wheel * wheelLines;
     journal->listScrollBar = UpdateScrollBar(track, count, ui.rows, firstVisible,
@@ -1039,23 +1072,30 @@ static void PaintQuests(const JournalLayout& ui, const JournalInput& input, cons
     const int end = (std::min)(firstVisible + ui.rows, count);
     const auto indicator = std::to_string(firstVisible + 1) + "-" + std::to_string(end)
         + " / " + std::to_string(count);
-    const int statusColumn = (ui.listRight - ui.margin) * 39 / 100;
+    int statusColumn = TextWidth(Russian(L"Статус"));
+    for (const auto id : visible) {
+        statusColumn = (std::max)(statusColumn, TextWidth(Russian(QuestStatus(questItems[id]))));
+    }
+    statusColumn = (std::min)(statusColumn, list.width * 46 / 100);
     const int statusHeading = ui.listRight - TextWidth(Russian(L"Статус"));
-    Text(ui.margin, ui.Y(4), indicator, statusHeading - ui.margin, Ink::Muted);
-    Text(statusHeading, ui.Y(4), Russian(L"Статус"), ui.listRight - statusHeading, Ink::Muted);
+    Text(ui.margin, ui.Y(4), Russian(L"Задания   ") + indicator, statusHeading - ui.margin, Ink::Gold);
+    Text(statusHeading, ui.Y(4), Russian(L"Статус"), ui.listRight - statusHeading, Ink::Gold);
     for (int i = firstVisible; i < end; ++i) {
         const auto id = visible[i];
         const auto& item = questItems[id];
-        std::string title = i == selected ? "> " : "  ";
-        title += QuestTitle(item);
+        std::string title = QuestTitle(item);
         if (catalog.entries[id].continuesBeyondIsland) title += " *";
         const auto status = Russian(QuestStatus(item));
         const int y = ui.Y(5 + i - firstVisible);
         const auto fittedStatus = FitText(status, statusColumn);
         const int statusX = ui.listRight - TextWidth(fittedStatus);
         const bool hovered = mouse.Over({list.x, y, list.width, ui.line});
-        Text(ui.margin, y, title, ui.listRight - statusColumn - ui.margin * 3 / 2,
-             i == selected || hovered ? Ink::Gold : Ink::Paper);
+        if (i == selected) {
+            Rule(ui.margin - journal->anx(8), y + journal->any(3), (std::max)(1, journal->anx(2)),
+                 ui.line - journal->any(7), bronzeInk);
+        }
+        Text(ui.margin, y, title, list.width - statusColumn - ui.margin / 2,
+             i == selected || hovered ? Ink::Bright : Ink::Paper);
         Text(statusX, y, fittedStatus, ui.listRight - statusX, QuestInk(item));
     }
     PaintDetails(ui, selectedId, input, mouse);
@@ -1141,7 +1181,8 @@ static void Loop() {
         return;
     }
     if (!journal) {
-        if (!toggle || ogame->IsOnPause() || !screen->GetFont()) return;
+        if (!toggle || ogame->IsOnPause() || !screen->GetFont()
+            || screen->psizex <= 0 || screen->psizey <= 0) return;
         journal = new JournalView(*ogame);
         if (!location) location = CurrentLocation().value_or(Location::Kondehra);
         if (diagnostics) RefreshRaw();
@@ -1165,20 +1206,24 @@ static void Loop() {
 
     const bool refreshPressed = zinput->KeyToggled(KEY_R);
     journal->ClrPrintwin();
+    journal->rules.clear();
     const JournalLayout ui;
+    HorizontalRule(ui.margin, ui.Right(), ui.footer - ui.line / 3);
     const auto mouse = journal->ReadMouse(input);
-    const std::string status = diagnostics ? journal->MouseDiagnostics() : "1.0.9";
+    const std::string status = diagnostics ? journal->MouseDiagnostics() : version;
     const int versionWidth = TextWidth(status);
     Text(ui.Right() - versionWidth, ui.footer + ui.line, status, versionWidth, Ink::Muted);
-    const auto closeLabel = Russian(L"[ Закрыть ]");
+    const std::string closeLabel = "Esc";
     const int closeWidth = TextWidth(closeLabel);
-    const JournalRect closeButton{ui.Right() - closeWidth, ui.Y(0), closeWidth, ui.line};
+    const JournalRect closeButton{ui.Right() - closeWidth - ui.margin, ui.Y(0),
+                                  closeWidth + ui.margin, ui.line};
     const bool closeHovered = mouse.Over(closeButton);
     if (mouse.pressed && closeHovered) {
         CloseJournal();
         return;
     }
-    Text(closeButton.x, closeButton.y, closeLabel, closeButton.width, closeHovered ? Ink::Gold : Ink::Muted);
+    Text(ui.Right() - closeWidth, closeButton.y, closeLabel, closeWidth,
+         closeHovered ? Ink::Bright : Ink::Gold);
     if (diagnostics) {
         if (filterPressed) { rawFilter = (rawFilter + 1) % rawFilterCount; page = 0; }
         if (refreshPressed) RefreshRaw();
