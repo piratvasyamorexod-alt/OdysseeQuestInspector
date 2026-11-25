@@ -168,8 +168,15 @@ static Step TamoraDeparture(OQITamora::QuestId id, const Facts& facts, Status st
         return Whole(status, mission == 1, HasUntakenQuest(facts));
     case T::Adanos:
         return Whole(status, NpcsAvailable({telem, "MIL_31_KLAUS", "NONE_4295_DIEB"}));
-    case T::Dress:
-        return Whole(status, NpcsAvailable({"VLK_7710_BUERGERIN"}));
+    case T::Dress: {
+        if (status == Status::Done) return Step::Done;
+        if (status == Status::Missed) return Step::Missed;
+        // Isabell offers the quest here. The dress is obtained off the island.
+        if (!HasUnpackedItem("ITAR_QUEEN")) return Step::Deferred;
+        const bool canTurnIn = facts.flag == 1 && Told("DIA_7710_BUERGERIN_HILFE") == 1
+            && NpcsAvailable({"VLK_7710_BUERGERIN"});
+        return status == Status::Available || canTurnIn ? Step::Open : Step::Deferred;
+    }
     case T::Griffin:
         return Whole(status, NpcsAvailable({"NONE_22009_SCHAEFER"}));
     case T::House:
