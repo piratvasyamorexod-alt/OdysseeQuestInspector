@@ -264,7 +264,17 @@ static Step AlbatrosDeparture(OQIAlbatros::QuestId id, const Facts& facts, Statu
     case A::Pay:
         return Whole(status, NpcsAvailable({harald, gernot}));
     case A::OreWeapon:
-        return Whole(status, UnpackedAmount("ITMI_NUGGET") >= 5 && NpcsAvailable({"MIL_9008_HAWK"}));
+        if (status == Status::Done) return Step::Done;
+        if (status == Status::Missed) return Step::Missed;
+        if (status == Status::Available) return Step::Open;
+        if (status == Status::Later) {
+            return Value("SCHMIED_TEACHSMITH") == 0 && FindLivingNpc("MIL_9008_HAWK")
+                ? Step::Open : Step::Deferred;
+        }
+        if (status != Status::Running) return Step::Unknown;
+        return InventoryAmount("ITMI_NUGGET") >= 5
+            && (FindLivingNpc("MIL_9008_HAWK") || FindLivingNpc("MIL_900801_HAWK"))
+            ? Step::Open : Step::Deferred;
     case A::Orcs:
         if (status == Status::Done) return Step::Done;
         return battle ? Whole(status, NpcsAvailable({"MIL_900801_HAWK"}), HasUntakenQuest(facts)) : Step::Deferred;

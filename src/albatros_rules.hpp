@@ -66,7 +66,8 @@ static Start AlbatrosStartRule(OQIAlbatros::QuestId id) {
     case A::Pay:
         return DialogOffer(harald, "DIA_HARALD_PALADIN_GERNOT", {{Told("DIA_HARALD_PALADINE"), 1}});
     case A::OreWeapon:
-        return WithNpc(Require({{Value("PLAYER_TALENT_SMITH"), 1}, {Value("SCHMIED_TEACHSMITH"), 0},
+        if (Value("CURRENTLEVEL") == Value("SEAWORLDFIGHT_ZEN")) return Start::Later;
+        return WithNpc(Require({{ArrayValue("PLAYER_TALENT_SMITH", 0), 1}, {Value("SCHMIED_TEACHSMITH"), 0},
                                 {Value("HAWK_9308_HALLO"), 1}}), "MIL_9008_HAWK");
     case A::Lookout:
         return DialogOffer("PAL_99002_GERNOT", "DIA_GERNOT_AUSGUCK", {{Value("MIS_KHORUSPROVIANT"), 2}});

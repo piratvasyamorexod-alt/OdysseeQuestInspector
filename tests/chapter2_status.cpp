@@ -15,10 +15,12 @@
 using namespace OQIKondehra;
 
 static std::map<std::string, int> flags{{"KAPITEL", 2}, {"CURRENTLEVEL", 14}};
+static std::map<std::pair<std::string, unsigned int>, int> arrayValues;
 static std::map<std::string, int> dialogs;
 static std::set<std::string> actors;
 static std::set<std::string> items;
 static std::map<std::string, int> quantities;
+static std::map<std::string, int> packedQuantities;
 
 static std::optional<int> Read(const std::map<std::string, int>& values, const char* name) {
     const auto it = values.find(name);
@@ -27,6 +29,10 @@ static std::optional<int> Read(const std::map<std::string, int>& values, const c
 }
 
 static std::optional<int> Value(const char* name) { return Read(flags, name); }
+static std::optional<int> ArrayValue(const char* name, unsigned int index) {
+    const auto it = arrayValues.find({name, index});
+    return it == arrayValues.end() ? std::nullopt : std::optional<int>{it->second};
+}
 static std::optional<int> Told(const char* name) { return Read(dialogs, name); }
 static bool OnAlbatros() { return Value("CURRENTLEVEL") == 16 || Value("CURRENTLEVEL") == 29; }
 static bool OnTamora() { return Value("CURRENTLEVEL") == 14; }
@@ -34,6 +40,9 @@ static int UnpackedAmount(const char* name) {
     return Read(quantities, name).value_or(static_cast<int>(items.count(name)));
 }
 static bool HasUnpackedItem(const char* name) { return UnpackedAmount(name) > 0; }
+static int InventoryAmount(const char* name) {
+    return UnpackedAmount(name) + Read(packedQuantities, name).value_or(0);
+}
 static bool FindLivingNpc(const char* name) { return actors.count(name) != 0; }
 static Start StartRule(QuestId) { return Start::Unknown; }
 
@@ -133,6 +142,21 @@ static void TestAlbatros() {
     Check(Inspect(A::Boatswain, {0}).status == Status::Available);
     Check(Inspect(A::Boatswain, {1}).status == Status::Running);
     Check(Inspect(A::Boatswain, {2}).status == Status::Done);
+
+    actors.insert("MIL_9008_HAWK");
+    flags["SEAWORLDFIGHT_ZEN"] = 8;
+    flags["SCHMIED_TEACHSMITH"] = 0;
+    flags["HAWK_9308_HALLO"] = 1;
+    arrayValues[{"PLAYER_TALENT_SMITH", 0}] = 0;
+    arrayValues[{"PLAYER_TALENT_SMITH", 1}] = 1;
+    Check(Inspect(A::OreWeapon, {0}).status == Status::Later);
+    arrayValues[{"PLAYER_TALENT_SMITH", 0}] = 1;
+    Check(Inspect(A::OreWeapon, {0}).status == Status::Available);
+    flags["CURRENTLEVEL"] = 8;
+    Check(Inspect(A::OreWeapon, {0}).status == Status::Later);
+    flags["CURRENTLEVEL"] = 29;
+    Check(Inspect(A::OreWeapon, {1}).status == Status::Running);
+    Check(Inspect(A::OreWeapon, {2}).status == Status::Done);
 
     Check(Inspect(A::Bully, {0, Journal::Running}).status == Status::Running);
     Check(Inspect(A::Bully, {3}).status == Status::Unknown);
@@ -240,7 +264,21 @@ static void TestDeparture() {
     Check(DepartureStep(A::Lookout, {0}, Status::Later) == Step::Deferred);
     flags["MIS_KHORUSPROVIANT"] = 2;
     Check(DepartureStep(A::Lookout, {0}, Status::Available) == Step::Open);
+    flags["SCHMIED_TEACHSMITH"] = 0;
+    actors.insert("MIL_9008_HAWK");
+    Check(DepartureStep(A::OreWeapon, {0}, Status::Later) == Step::Open);
+    Check(DepartureStep(A::OreWeapon, {0}, Status::Available) == Step::Open);
+    quantities["ITMI_NUGGET"] = 2;
+    packedQuantities["ITMI_NUGGET"] = 2;
+    Check(DepartureStep(A::OreWeapon, {1}, Status::Running) == Step::Deferred);
+    packedQuantities["ITMI_NUGGET"] = 3;
+    Check(DepartureStep(A::OreWeapon, {1}, Status::Running) == Step::Open);
+    actors.erase("MIL_9008_HAWK");
     flags["CURRENTLEVEL"] = 8;
+    Check(DepartureStep(A::OreWeapon, {0}, Status::Later) == Step::Deferred);
+    actors.insert("MIL_900801_HAWK");
+    Check(DepartureStep(A::OreWeapon, {1}, Status::Running) == Step::Open);
+    Check(DepartureStep(A::OreWeapon, {2}, Status::Done) == Step::Done);
     actors.insert("PAL_99002_GERNOT");
     Check(DepartureStep(A::Lookout, {1}, Status::Running) == Step::Open);
     Check(DepartureStep(A::Lookout, {2}, Status::Done) == Step::Done);

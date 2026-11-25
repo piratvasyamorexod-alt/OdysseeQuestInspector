@@ -83,6 +83,15 @@ static std::optional<int> Value(const char* name) {
     return value;
 }
 
+static std::optional<int> ArrayValue(const char* name, unsigned int index) {
+    auto* symbol = parser->GetSymbol(name);
+    if (!symbol || symbol->type != zPAR_TYPE_INT || index >= symbol->ele
+        || symbol->HasFlag(zPAR_FLAG_CLASSVAR)) return std::nullopt;
+    int value = 0;
+    symbol->GetValue(value, static_cast<int>(index));
+    return value;
+}
+
 static std::string TopicTitle(const char* name) {
     auto* symbol = Scalar(name, zPAR_TYPE_STRING);
     if (!symbol || !symbol->HasFlag(zPAR_FLAG_CONST)) return {};
@@ -206,6 +215,13 @@ static int UnpackedAmount(const char* name) {
 
 static bool HasUnpackedItem(const char* name) {
     return UnpackedAmount(name) > 0;
+}
+
+static int InventoryAmount(const char* name) {
+    int packed = 0, variant = 0;
+    // Mode 0 reads the packed stack without removing it or creating an item.
+    if (!player->inventory2.GetPackedItemInfo(zSTRING(name), 0, packed, variant)) packed = 0;
+    return UnpackedAmount(name) + packed;
 }
 
 static Start Require(std::initializer_list<std::pair<std::optional<int>, int>> checks) {
@@ -401,7 +417,7 @@ struct JournalRect {
     }
 };
 
-static constexpr char version[] = "1.1.2";
+static constexpr char version[] = "1.1.3";
 static constexpr unsigned long lineInk = 0xFF655740;
 static constexpr unsigned long bronzeInk = 0xFFDDB67D;
 
@@ -1012,9 +1028,9 @@ static void PaintQuests(const JournalLayout& ui, const JournalInput& input, cons
     Text(ui.margin, ui.footer, Russian(L"Стрелки   Выбор и локация     PgUp/PgDn   Страница"),
          ui.Right() - ui.margin, Ink::Muted);
     Text(ui.margin, ui.footer + ui.line, Russian(L"Shift+F   Фильтр     Shift+V   Перед отплытием     Shift+D   Флаги"),
-         ui.Right() - ui.margin - TextWidth(version) - ui.margin, Ink::Muted);
+         ui.Right() - ui.margin, Ink::Muted);
     if (!verifiedBuild) {
-        Text(ui.margin, ui.Y(2), Russian(L"Скрипты русской версии 2.7.5.2 не распознаны."), ui.Right() - ui.margin);
+        Text(ui.margin, ui.Y(2), Russian(L"Данные заданий не распознаны."), ui.Right() - ui.margin);
         return;
     }
 
@@ -1210,9 +1226,11 @@ static void Loop() {
     const JournalLayout ui;
     HorizontalRule(ui.margin, ui.Right(), ui.footer - ui.line / 3);
     const auto mouse = journal->ReadMouse(input);
-    const std::string status = diagnostics ? journal->MouseDiagnostics() : version;
-    const int versionWidth = TextWidth(status);
-    Text(ui.Right() - versionWidth, ui.footer + ui.line, status, versionWidth, Ink::Muted);
+    if (diagnostics) {
+        const auto status = journal->MouseDiagnostics();
+        const int statusWidth = TextWidth(status);
+        Text(ui.Right() - statusWidth, ui.footer + ui.line, status, statusWidth, Ink::Muted);
+    }
     const std::string closeLabel = "Esc";
     const int closeWidth = TextWidth(closeLabel);
     const JournalRect closeButton{ui.Right() - closeWidth - ui.margin, ui.Y(0),
