@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -30,12 +31,14 @@ static bool apostropheWasDown = false;
 static bool verifiedBuild = false;
 static bool beforeDeparture = false;
 static bool diagnostics = false;
-static bool choosingChapter = true;
+static constexpr int chapterCount = 7;
+static int selectedChapter = 2;
 static int questFilter = 0;
 static int rawFilter = 0;
 static int page = 0;
 static int selected = 0;
 enum class Location : std::size_t { Albatros, Kondehra, Tamora, Adarmos };
+static constexpr Location chapterTwo[] = {Location::Kondehra, Location::Albatros, Location::Tamora, Location::Adarmos};
 static std::optional<Location> location;
 static std::optional<std::size_t> revealedQuest;
 static std::chrono::steady_clock::time_point nextRefresh;
@@ -66,6 +69,11 @@ static constexpr Catalog catalogs[] = {
 
 static Location SelectedLocation() {
     return location.value_or(Location::Kondehra);
+}
+
+static std::span<const Location> ChapterLocations(int chapter) {
+    if (chapter == 2) return chapterTwo;
+    return {};
 }
 
 static const Catalog& SelectedCatalog() {
@@ -374,7 +382,7 @@ static bool ClosedRule(QuestId quest, std::optional<int> flag) {
 static void RefreshQuests() {
     nextRefresh = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     verifiedBuild = IsVerifiedScriptBuild();
-    currentVisit = verifiedBuild && Value("KAPITEL") == 2 && CurrentLocation() == SelectedLocation();
+    currentVisit = verifiedBuild && Value("KAPITEL") == selectedChapter && CurrentLocation() == SelectedLocation();
     progress = {};
     if (!verifiedBuild) return;
 
@@ -434,7 +442,6 @@ struct JournalInput {
     int mouseWheel = 0;
     bool mouseClick = false;
     bool hint = false;
-    bool back = false;
     bool close = false;
 };
 
@@ -446,7 +453,7 @@ struct JournalRect {
     }
 };
 
-static constexpr char version[] = "1.2.0";
+static constexpr char version[] = "1.2.1";
 static constexpr unsigned long lineInk = 0xFF655740;
 static constexpr unsigned long bronzeInk = 0xFFDDB67D;
 
@@ -492,7 +499,7 @@ class JournalView : public zCView {
     int cursorX = 0, cursorY = 0;
     bool mouseHadFocus = false;
     bool mouseDown = false;
-    bool windowsKeys[9]{};
+    bool windowsKeys[8]{};
     unsigned mouseClicks = 0, mouseWheelSteps = 0;
 
     static void ApplyMouseAcquisition() {
@@ -654,7 +661,7 @@ public:
 
     JournalInput TakeInput() {
         auto input = std::exchange(pending, JournalInput{});
-        constexpr int keys[] = {VK_ESCAPE, VK_RETURN, VK_UP, VK_DOWN, VK_PRIOR, VK_NEXT, VK_LEFT, VK_RIGHT, VK_BACK};
+        constexpr int keys[] = {VK_ESCAPE, VK_RETURN, VK_UP, VK_DOWN, VK_PRIOR, VK_NEXT, VK_LEFT, VK_RIGHT};
         const bool foreground = ForegroundGameWindow() != nullptr;
         bool pressed[std::size(keys)]{};
         for (std::size_t i = 0; i < std::size(keys); ++i) {
@@ -663,7 +670,6 @@ public:
         }
         input.close = input.close || pressed[0];
         input.hint = input.hint || pressed[1];
-        input.back = input.back || pressed[8];
         const int vertical = static_cast<int>(pressed[3]) - static_cast<int>(pressed[2]);
         const int pages = static_cast<int>(pressed[5]) - static_cast<int>(pressed[4]);
         const int horizontal = static_cast<int>(pressed[7]) - static_cast<int>(pressed[6]);
@@ -713,7 +719,6 @@ public:
         case MOUSE_WHEELDOWN: --pending.mouseWheel; return TRUE;
         case MOUSE_BUTTONLEFT: pending.mouseClick = true; return TRUE;
         case KEY_ESCAPE: pending.close = true; return TRUE;
-        case KEY_BACK: pending.back = true; return TRUE;
         case KEY_UP:
             if (ShiftDown()) --pending.hintLines;
             else --pending.selection;
@@ -890,54 +895,48 @@ static const wchar_t* DepartureLabel(Step step) {
 
 static constexpr Step departureFilters[] = {Step::Open, Step::Missed, Step::Unknown};
 
-static constexpr Location tabs[] = {Location::Kondehra, Location::Albatros, Location::Tamora, Location::Adarmos};
-
-static int SelectedTab() {
-    return static_cast<int>(std::find(std::begin(tabs), std::end(tabs), SelectedLocation()) - std::begin(tabs));
+static JournalRect TabBounds(const JournalRect& row, int tab, int count) {
+    const int left = row.x + tab * row.width / count;
+    return {left, row.y, row.x + (tab + 1) * row.width / count - left, row.height};
 }
 
-static JournalRect TabBounds(const JournalLayout& ui, int tab) {
-    const int count = static_cast<int>(std::size(tabs));
-    const int width = ui.Right() - ui.margin;
-    const int left = ui.margin + tab * width / count;
-    return {left, ui.Y(1), ui.margin + (tab + 1) * width / count - left, ui.line};
-}
-
-static bool PaintChapters(const JournalLayout& ui, const JournalMouse& mouse) {
-    Text(ui.margin, ui.Y(0), Russian(L"Журнал экспедиции · Главы"), ui.Right() - ui.margin, Ink::Gold);
-    HorizontalRule(ui.margin, ui.Right(), ui.Y(1) - journal->any(2));
-    bool open = false;
-    for (int chapter = 1; chapter <= 7; ++chapter) {
-        const auto label = Russian(L"Глава ") + std::to_string(chapter);
-        const JournalRect row{ui.margin, ui.Y(chapter + 1), TextWidth(label) + ui.margin, ui.line};
-        const bool available = chapter == 2;
-        const bool hovered = available && mouse.Over(row);
-        Text(row.x, row.y, label, row.width, hovered ? Ink::Bright : available ? Ink::Gold : Ink::Muted);
-        if (available) {
-            HorizontalRule(row.x, row.x + TextWidth(label), row.y + row.height - journal->any(1), bronzeInk);
-        }
-        open |= hovered && mouse.pressed;
+static std::optional<int> ClickedTab(const JournalRect& row, int count, const JournalMouse& mouse) {
+    if (!mouse.pressed || !mouse.Over(row)) return std::nullopt;
+    for (int tab = 0; tab < count; ++tab) {
+        if (mouse.Over(TabBounds(row, tab, count))) return tab;
     }
-    return open;
+    return std::nullopt;
 }
 
-static JournalRect ChaptersButton(const JournalLayout& ui) {
-    return {ui.margin, ui.Y(0), TextWidth(Russian(L"< Главы")) + ui.margin, ui.line};
+static void PaintTab(const JournalRect& cell, const std::string& label, bool active, bool hovered) {
+    const int labelX = cell.x + (std::max)(0, (cell.width - TextWidth(label)) / 2);
+    Text(labelX, cell.y, label, cell.x + cell.width - labelX, active || hovered ? Ink::Bright : Ink::Gold);
+    if (active) {
+        const int inset = cell.width / 10;
+        HorizontalRule(cell.x + inset, cell.x + cell.width - inset,
+                       cell.y + cell.height - journal->any(3), bronzeInk, 2);
+    }
 }
 
-static void PaintTabs(const JournalLayout& ui, const JournalMouse& mouse) {
-    HorizontalRule(ui.margin, ui.Right(), ui.Y(2) - journal->any(2));
-    for (int i = 0; i < static_cast<int>(std::size(tabs)); ++i) {
-        const auto name = Russian(catalogs[static_cast<std::size_t>(tabs[i])].name);
-        const bool active = tabs[i] == SelectedLocation();
-        const auto cell = TabBounds(ui, i);
-        const int labelX = cell.x + (std::max)(0, (cell.width - TextWidth(name)) / 2);
-        Text(labelX, cell.y, name, cell.x + cell.width - labelX,
-             active ? Ink::Bright : mouse.Over(cell) ? Ink::Bright : Ink::Gold);
-        if (active) {
-            HorizontalRule(cell.x + ui.margin / 3, cell.x + cell.width - ui.margin / 3,
-                           cell.y + ui.line - journal->any(2), bronzeInk, 3);
-        }
+static void PaintChapterTabs(const JournalRect& row, const JournalMouse& mouse) {
+    HorizontalRule(row.x, row.x + row.width, row.y + row.height - journal->any(1));
+    for (int tab = 0; tab < chapterCount; ++tab) {
+        const auto cell = TabBounds(row, tab, chapterCount);
+        const auto number = std::to_string(tab + 1);
+        const auto label = Russian(L"Глава ") + number;
+        PaintTab(cell, TextWidth(label) < cell.width ? label : number,
+                 tab + 1 == selectedChapter, mouse.Over(cell));
+    }
+}
+
+static void PaintLocationTabs(const JournalRect& row, std::span<const Location> locations, const JournalMouse& mouse) {
+    HorizontalRule(row.x, row.x + row.width, row.y + row.height - journal->any(1));
+    const int count = static_cast<int>(locations.size());
+    for (int tab = 0; tab < count; ++tab) {
+        const auto id = locations[tab];
+        const auto cell = TabBounds(row, tab, count);
+        PaintTab(cell, Russian(catalogs[static_cast<std::size_t>(id)].name),
+                 id == SelectedLocation(), mouse.Over(cell));
     }
 }
 
@@ -1078,12 +1077,6 @@ static Ink QuestInk(const QuestItem& item) {
 
 static void PaintQuests(const JournalLayout& ui, const JournalInput& input, const JournalMouse& mouse) {
     const auto& catalog = SelectedCatalog();
-    const auto back = ChaptersButton(ui);
-    Text(back.x, back.y, Russian(L"< Главы"), back.width, mouse.Over(back) ? Ink::Bright : Ink::Gold);
-    const auto chapter = Russian(L"Глава 2");
-    const int titleWidth = TextWidth(chapter);
-    Text((ui.width - titleWidth) / 2, ui.Y(0), chapter, titleWidth, Ink::Gold);
-    PaintTabs(ui, mouse);
     Text(ui.margin, ui.footer, Russian(L"Стрелки   Выбор и локация     PgUp/PgDn   Страница"),
          ui.Right() - ui.margin, Ink::Muted);
     Text(ui.margin, ui.footer + ui.line, Russian(L"Shift+F   Фильтр     Shift+V   Перед отплытием     Shift+D   Флаги"),
@@ -1226,6 +1219,24 @@ static void ResetQuestSelection() {
     HideHint();
 }
 
+static void SelectChapter(int number) {
+    selectedChapter = number;
+    beforeDeparture = false;
+    questFilter = 0;
+    ResetQuestSelection();
+    journal->listScrollBar.reset();
+    journal->hintScrollBar.reset();
+    const auto locations = ChapterLocations(number);
+    if (locations.empty()) {
+        questItems.clear();
+        return;
+    }
+    if (std::find(locations.begin(), locations.end(), SelectedLocation()) == locations.end()) {
+        location = locations.front();
+    }
+    RefreshQuests();
+}
+
 static bool JournalTogglePressed() {
     const bool focused = OQIMouse::HasFocus(hWndApp);
     const auto virtualKey = MapVirtualKeyW(KEY_APOSTROPHE, MAPVK_VSC_TO_VK_EX);
@@ -1259,8 +1270,10 @@ static void Loop() {
         if (!toggle || ogame->IsOnPause() || !screen->GetFont()
             || screen->psizex <= 0 || screen->psizey <= 0) return;
         journal = new JournalView(*ogame);
-        choosingChapter = true;
         diagnostics = false;
+        location = CurrentLocation();
+        const int chapter = Value("KAPITEL").value_or(2);
+        SelectChapter(chapter >= 1 && chapter <= chapterCount ? chapter : 2);
     }
 
     auto input = journal->TakeInput();
@@ -1274,7 +1287,7 @@ static void Loop() {
         HideHint();
         input = {};
         if (diagnostics) RefreshRaw();
-        else if (!choosingChapter) RefreshQuests();
+        else if (!ChapterLocations(selectedChapter).empty()) RefreshQuests();
     }
 
     const bool refreshPressed = zinput->KeyToggled(KEY_R);
@@ -1308,38 +1321,27 @@ static void Loop() {
         return;
     }
 
-    if (!choosingChapter && (input.back || (mouse.pressed && mouse.Over(ChaptersButton(ui))))) {
-        choosingChapter = true;
-        journal->listScrollBar.reset();
-        journal->hintScrollBar.reset();
-        ResetQuestSelection();
+    const JournalRect chapters{ui.margin, ui.Y(0), closeButton.x - ui.margin, ui.line};
+    if (const auto clicked = ClickedTab(chapters, chapterCount, mouse); clicked && *clicked + 1 != selectedChapter) {
+        SelectChapter(*clicked + 1);
         input = {};
     }
-    if (choosingChapter) {
-        const bool clicked = PaintChapters(ui, mouse);
-        if (clicked || input.hint) {
-            choosingChapter = false;
-            location = CurrentLocation().value_or(SelectedLocation());
-            beforeDeparture = false;
-            questFilter = 0;
-            ResetQuestSelection();
-            RefreshQuests();
-        }
+    PaintChapterTabs(chapters, mouse);
+    const auto locations = ChapterLocations(selectedChapter);
+    if (locations.empty()) {
+        Text(ui.margin, ui.Y(2), Russian(L"Задания этой главы пока не добавлены."), ui.Right() - ui.margin, Ink::Muted);
         return;
     }
 
+    const JournalRect islands{ui.margin, ui.Y(1), ui.Right() - ui.margin, ui.line};
     input.hint = input.hint || hintPressed;
-    const int tabCount = static_cast<int>(std::size(tabs));
-    const int currentTab = SelectedTab();
+    const int tabCount = static_cast<int>(locations.size());
+    const int currentTab = static_cast<int>(std::find(locations.begin(), locations.end(), SelectedLocation()) - locations.begin());
     const int movement = input.locations + static_cast<int>(locationPressed);
-    int nextTab = (currentTab + movement % tabCount + tabCount) % tabCount;
-    if (mouse.pressed) {
-        for (int tab = 0; tab < tabCount; ++tab) {
-            if (mouse.Over(TabBounds(ui, tab))) nextTab = tab;
-        }
-    }
+    const int nextTab = ClickedTab(islands, tabCount, mouse)
+        .value_or((currentTab + movement % tabCount + tabCount) % tabCount);
     if (nextTab != currentTab) {
-        location = tabs[nextTab];
+        location = locations[nextTab];
         questFilter = 0;
         ResetQuestSelection();
         input = {};
@@ -1358,6 +1360,7 @@ static void Loop() {
         input.hint = false;
     }
     if (refreshPressed || std::chrono::steady_clock::now() >= nextRefresh) RefreshQuests();
+    PaintLocationTabs(islands, locations, mouse);
     PaintQuests(ui, input, mouse);
 }
 
@@ -1371,7 +1374,6 @@ public:
         verifiedBuild = false;
         beforeDeparture = false;
         diagnostics = false;
-        choosingChapter = true;
         questFilter = rawFilter = page = selected = firstVisible = 0;
         rawItems.clear();
         questItems.clear();
