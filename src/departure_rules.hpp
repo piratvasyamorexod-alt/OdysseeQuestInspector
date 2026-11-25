@@ -285,11 +285,65 @@ static Step AlbatrosDeparture(OQIAlbatros::QuestId id, const Facts& facts, Statu
     }
 }
 
+static Step AdarmosDeparture(OQIAdarmos::QuestId id, const Facts& facts, Status status) {
+    namespace A = OQIAdarmos;
+    using namespace OQIDeparture;
+    if (status == Status::Done) return Step::Done;
+    if (status == Status::Missed) return Step::Missed;
+
+    const bool untaken = HasUntakenQuest(facts);
+    switch (id) {
+    case A::Mission:
+        return untaken ? Step::Deferred : Whole(status, NpcsAvailable({A::elder, A::rosh}));
+    case A::Fleet:
+        return Checkpoint(IsValue("MIS_ADARMOSMISSION", 2), NpcsAvailable({A::rosh}));
+    case A::LostSon: {
+        const auto farewell = Told("DIA_DAD_ERSTERABSCHIED");
+        return Checkpoint(farewell ? std::optional<bool>{*farewell == 1} : std::nullopt,
+                          NpcsAvailable({A::elder}));
+    }
+    case A::Corsairs:
+        return Whole(status, NpcsAvailable({A::officer, A::bjorn}), untaken);
+    case A::Smith:
+        return Whole(status, NpcsAvailable({A::elder, "VLK_6002_VICO"}), untaken);
+    case A::Rosh:
+        return Whole(status, NpcsAvailable({A::elder, A::kosta}), untaken);
+    case A::LazyWorker:
+        return Whole(status, NpcsAvailable({A::bantor}) &&
+                     (Value("PABLOGEHTWIEDERARBEITEN") == 1 || NpcsAvailable({"VLK_6009_PABLO"})), untaken);
+    case A::Dice:
+        return Whole(status, NpcsAvailable({A::dale}), untaken);
+    case A::Scout:
+        return Whole(status, NpcsAvailable({A::mount, A::alvares}), untaken);
+    case A::Meat:
+        return Whole(status, NpcsAvailable({A::mount}), untaken);
+    case A::RoshIntel:
+        return Whole(status, NpcsAvailable({A::officer})
+                     && (!untaken || NpcsAvailable({A::alvares})), untaken);
+    case A::Amulet:
+        return Whole(status, NpcsAvailable({A::erik}), untaken);
+    case A::Herbs:
+        return Whole(status, NpcsAvailable({A::bjorn, A::emilio}), untaken);
+    case A::VillageGold:
+        return Whole(status, NpcsAvailable({A::elder, A::officer}), untaken);
+    case A::Mage:
+        return Whole(status, NpcsAvailable({"KDF_6031_CAIO"})
+                     && (!untaken || NpcsAvailable({A::bjorn})), untaken);
+    case A::Note:
+        return Whole(status, NpcsAvailable({A::emilio}), untaken);
+    case A::Emilio:
+        return Whole(status, NpcsAvailable({A::emilio, "VLK_6024_MELVIN"}), untaken);
+    default:
+        return Step::Unknown;
+    }
+}
+
 static Step DepartureStep(std::size_t index, const Facts& facts, Status status) {
     switch (SelectedLocation()) {
     case Location::Kondehra: return KondehraDeparture(static_cast<QuestId>(index), facts, status);
     case Location::Tamora: return TamoraDeparture(static_cast<OQITamora::QuestId>(index), facts, status);
     case Location::Albatros: return AlbatrosDeparture(static_cast<OQIAlbatros::QuestId>(index), facts, status);
+    case Location::Adarmos: return AdarmosDeparture(static_cast<OQIAdarmos::QuestId>(index), facts, status);
     }
     return Step::Unknown;
 }

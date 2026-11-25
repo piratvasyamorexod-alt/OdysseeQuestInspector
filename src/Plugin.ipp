@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "adarmos.hpp"
 #include "albatros.hpp"
 #include "departure.hpp"
 #include "journal_mouse_win32.hpp"
@@ -29,11 +30,12 @@ static bool apostropheWasDown = false;
 static bool verifiedBuild = false;
 static bool beforeDeparture = false;
 static bool diagnostics = false;
+static bool choosingChapter = true;
 static int questFilter = 0;
 static int rawFilter = 0;
 static int page = 0;
 static int selected = 0;
-enum class Location : std::size_t { Albatros, Kondehra, Tamora };
+enum class Location : std::size_t { Albatros, Kondehra, Tamora, Adarmos };
 static std::optional<Location> location;
 static std::optional<std::size_t> revealedQuest;
 static std::chrono::steady_clock::time_point nextRefresh;
@@ -59,6 +61,7 @@ static constexpr Catalog catalogs[] = {
     {L"Альбатрос", OQIAlbatros::quests.data(), OQIAlbatros::quests.size()},
     {L"Кондера", quests.data(), quests.size()},
     {L"Тамора", OQITamora::quests.data(), OQITamora::quests.size()},
+    {L"Адармос", OQIAdarmos::quests.data(), OQIAdarmos::quests.size()},
 };
 
 static Location SelectedLocation() {
@@ -178,6 +181,21 @@ static oCNpc* FindLivingNpc(const char* name) {
     return nullptr;
 }
 
+static std::optional<int> NpcFirstAiVar(const char* instance) {
+    const auto* npc = FindLivingNpc(instance);
+    if (!npc) return std::nullopt;
+    return npc->aiscriptvars[0];
+}
+
+static std::optional<int> NpcNearWaypoint(const char* instance, const char* name, float range) {
+    auto* npc = FindLivingNpc(instance);
+    auto* wayNet = ogame->GetGameWorld()->wayNet;
+    auto* waypoint = wayNet ? wayNet->GetWaypoint(name) : nullptr;
+    if (!npc || !waypoint) return std::nullopt;
+    auto position = waypoint->GetPositionWorld();
+    return (npc->GetPositionWorld() - position).Length() < range;
+}
+
 static bool OnKondehra() {
     return Value("CURRENTLEVEL") == 57; // KONDEHRA_ZEN in the verified script build.
 }
@@ -185,6 +203,11 @@ static bool OnKondehra() {
 static bool OnTamora() {
     const auto tamora = Value("TAMORA_ZEN");
     return tamora && Value("CURRENTLEVEL") == tamora;
+}
+
+static bool OnAdarmos() {
+    const auto adarmos = Value("ADARMOS_ZEN");
+    return adarmos && Value("CURRENTLEVEL") == adarmos;
 }
 
 static bool OnAlbatros() {
@@ -197,6 +220,7 @@ static bool OnAlbatros() {
 static std::optional<Location> CurrentLocation() {
     if (OnKondehra()) return Location::Kondehra;
     if (OnTamora()) return Location::Tamora;
+    if (OnAdarmos()) return Location::Adarmos;
     if (OnAlbatros()) return Location::Albatros;
     return std::nullopt;
 }
@@ -344,6 +368,7 @@ static bool ClosedRule(QuestId quest, std::optional<int> flag) {
 // Tamora-specific start and closing conditions are defined beside the catalog.
 #include "tamora_rules.hpp"
 #include "albatros_rules.hpp"
+#include "adarmos_rules.hpp"
 #include "departure_rules.hpp"
 
 static void RefreshQuests() {
@@ -353,6 +378,7 @@ static void RefreshQuests() {
     progress = {};
     if (!verifiedBuild) return;
 
+    const auto selectedLocation = SelectedLocation();
     const auto& catalog = SelectedCatalog();
     questItems.resize(catalog.size);
     for (std::size_t i = 0; i < questItems.size(); ++i) {
@@ -362,16 +388,18 @@ static void RefreshQuests() {
         Facts facts;
         facts.flag = Value(quest.flag);
         facts.journal = ReadJournal(item.title);
-        if (SelectedLocation() == Location::Albatros) {
+        if (selectedLocation == Location::Albatros) {
             const auto id = static_cast<OQIAlbatros::QuestId>(i);
             facts.windowClosed = AlbatrosClosedRule(id, facts);
             if (facts.flag == 0) facts.start = AlbatrosStartRule(id);
             item.result = Evaluate(facts);
-        } else if (SelectedLocation() == Location::Tamora) {
+        } else if (selectedLocation == Location::Tamora) {
             const auto id = static_cast<OQITamora::QuestId>(i);
             facts.windowClosed = TamoraClosedRule(id, facts);
             if (facts.flag == 0) facts.start = TamoraStartRule(id);
             item.result = Evaluate(facts);
+        } else if (selectedLocation == Location::Adarmos) {
+            item.result = InspectAdarmos(static_cast<OQIAdarmos::QuestId>(i), facts);
         } else {
             const auto id = static_cast<QuestId>(i);
             facts.windowClosed = ClosedRule(id, facts.flag);
@@ -406,6 +434,7 @@ struct JournalInput {
     int mouseWheel = 0;
     bool mouseClick = false;
     bool hint = false;
+    bool back = false;
     bool close = false;
 };
 
@@ -417,7 +446,7 @@ struct JournalRect {
     }
 };
 
-static constexpr char version[] = "1.1.3";
+static constexpr char version[] = "1.2.0";
 static constexpr unsigned long lineInk = 0xFF655740;
 static constexpr unsigned long bronzeInk = 0xFFDDB67D;
 
@@ -463,7 +492,7 @@ class JournalView : public zCView {
     int cursorX = 0, cursorY = 0;
     bool mouseHadFocus = false;
     bool mouseDown = false;
-    bool windowsKeys[8]{};
+    bool windowsKeys[9]{};
     unsigned mouseClicks = 0, mouseWheelSteps = 0;
 
     static void ApplyMouseAcquisition() {
@@ -625,7 +654,7 @@ public:
 
     JournalInput TakeInput() {
         auto input = std::exchange(pending, JournalInput{});
-        constexpr int keys[] = {VK_ESCAPE, VK_RETURN, VK_UP, VK_DOWN, VK_PRIOR, VK_NEXT, VK_LEFT, VK_RIGHT};
+        constexpr int keys[] = {VK_ESCAPE, VK_RETURN, VK_UP, VK_DOWN, VK_PRIOR, VK_NEXT, VK_LEFT, VK_RIGHT, VK_BACK};
         const bool foreground = ForegroundGameWindow() != nullptr;
         bool pressed[std::size(keys)]{};
         for (std::size_t i = 0; i < std::size(keys); ++i) {
@@ -634,6 +663,7 @@ public:
         }
         input.close = input.close || pressed[0];
         input.hint = input.hint || pressed[1];
+        input.back = input.back || pressed[8];
         const int vertical = static_cast<int>(pressed[3]) - static_cast<int>(pressed[2]);
         const int pages = static_cast<int>(pressed[5]) - static_cast<int>(pressed[4]);
         const int horizontal = static_cast<int>(pressed[7]) - static_cast<int>(pressed[6]);
@@ -683,6 +713,7 @@ public:
         case MOUSE_WHEELDOWN: --pending.mouseWheel; return TRUE;
         case MOUSE_BUTTONLEFT: pending.mouseClick = true; return TRUE;
         case KEY_ESCAPE: pending.close = true; return TRUE;
+        case KEY_BACK: pending.back = true; return TRUE;
         case KEY_UP:
             if (ShiftDown()) --pending.hintLines;
             else --pending.selection;
@@ -859,15 +890,39 @@ static const wchar_t* DepartureLabel(Step step) {
 
 static constexpr Step departureFilters[] = {Step::Open, Step::Missed, Step::Unknown};
 
-static constexpr Location tabs[] = {Location::Kondehra, Location::Albatros, Location::Tamora};
+static constexpr Location tabs[] = {Location::Kondehra, Location::Albatros, Location::Tamora, Location::Adarmos};
 
 static int SelectedTab() {
     return static_cast<int>(std::find(std::begin(tabs), std::end(tabs), SelectedLocation()) - std::begin(tabs));
 }
 
 static JournalRect TabBounds(const JournalLayout& ui, int tab) {
-    const int width = (ui.Right() - ui.margin) / static_cast<int>(std::size(tabs));
-    return {ui.margin + tab * width, ui.Y(1), width, ui.line};
+    const int count = static_cast<int>(std::size(tabs));
+    const int width = ui.Right() - ui.margin;
+    const int left = ui.margin + tab * width / count;
+    return {left, ui.Y(1), ui.margin + (tab + 1) * width / count - left, ui.line};
+}
+
+static bool PaintChapters(const JournalLayout& ui, const JournalMouse& mouse) {
+    Text(ui.margin, ui.Y(0), Russian(L"Журнал экспедиции · Главы"), ui.Right() - ui.margin, Ink::Gold);
+    HorizontalRule(ui.margin, ui.Right(), ui.Y(1) - journal->any(2));
+    bool open = false;
+    for (int chapter = 1; chapter <= 7; ++chapter) {
+        const auto label = Russian(L"Глава ") + std::to_string(chapter);
+        const JournalRect row{ui.margin, ui.Y(chapter + 1), TextWidth(label) + ui.margin, ui.line};
+        const bool available = chapter == 2;
+        const bool hovered = available && mouse.Over(row);
+        Text(row.x, row.y, label, row.width, hovered ? Ink::Bright : available ? Ink::Gold : Ink::Muted);
+        if (available) {
+            HorizontalRule(row.x, row.x + TextWidth(label), row.y + row.height - journal->any(1), bronzeInk);
+        }
+        open |= hovered && mouse.pressed;
+    }
+    return open;
+}
+
+static JournalRect ChaptersButton(const JournalLayout& ui) {
+    return {ui.margin, ui.Y(0), TextWidth(Russian(L"< Главы")) + ui.margin, ui.line};
 }
 
 static void PaintTabs(const JournalLayout& ui, const JournalMouse& mouse) {
@@ -1023,7 +1078,11 @@ static Ink QuestInk(const QuestItem& item) {
 
 static void PaintQuests(const JournalLayout& ui, const JournalInput& input, const JournalMouse& mouse) {
     const auto& catalog = SelectedCatalog();
-    Text(ui.margin, ui.Y(0), Russian(L"Журнал экспедиции · Глава 2"), ui.Right() - ui.margin, Ink::Gold);
+    const auto back = ChaptersButton(ui);
+    Text(back.x, back.y, Russian(L"< Главы"), back.width, mouse.Over(back) ? Ink::Bright : Ink::Gold);
+    const auto chapter = Russian(L"Глава 2");
+    const int titleWidth = TextWidth(chapter);
+    Text((ui.width - titleWidth) / 2, ui.Y(0), chapter, titleWidth, Ink::Gold);
     PaintTabs(ui, mouse);
     Text(ui.margin, ui.footer, Russian(L"Стрелки   Выбор и локация     PgUp/PgDn   Страница"),
          ui.Right() - ui.margin, Ink::Muted);
@@ -1200,9 +1259,8 @@ static void Loop() {
         if (!toggle || ogame->IsOnPause() || !screen->GetFont()
             || screen->psizex <= 0 || screen->psizey <= 0) return;
         journal = new JournalView(*ogame);
-        if (!location) location = CurrentLocation().value_or(Location::Kondehra);
-        if (diagnostics) RefreshRaw();
-        else RefreshQuests();
+        choosingChapter = true;
+        diagnostics = false;
     }
 
     auto input = journal->TakeInput();
@@ -1210,14 +1268,13 @@ static void Loop() {
         CloseJournal();
         return;
     }
-    input.hint = input.hint || hintPressed;
     if (diagnosticPressed) {
         diagnostics = !diagnostics;
         journal->listGrabOffset.reset();
         HideHint();
         input = {};
         if (diagnostics) RefreshRaw();
-        else RefreshQuests();
+        else if (!choosingChapter) RefreshQuests();
     }
 
     const bool refreshPressed = zinput->KeyToggled(KEY_R);
@@ -1251,6 +1308,27 @@ static void Loop() {
         return;
     }
 
+    if (!choosingChapter && (input.back || (mouse.pressed && mouse.Over(ChaptersButton(ui))))) {
+        choosingChapter = true;
+        journal->listScrollBar.reset();
+        journal->hintScrollBar.reset();
+        ResetQuestSelection();
+        input = {};
+    }
+    if (choosingChapter) {
+        const bool clicked = PaintChapters(ui, mouse);
+        if (clicked || input.hint) {
+            choosingChapter = false;
+            location = CurrentLocation().value_or(SelectedLocation());
+            beforeDeparture = false;
+            questFilter = 0;
+            ResetQuestSelection();
+            RefreshQuests();
+        }
+        return;
+    }
+
+    input.hint = input.hint || hintPressed;
     const int tabCount = static_cast<int>(std::size(tabs));
     const int currentTab = SelectedTab();
     const int movement = input.locations + static_cast<int>(locationPressed);
@@ -1293,6 +1371,7 @@ public:
         verifiedBuild = false;
         beforeDeparture = false;
         diagnostics = false;
+        choosingChapter = true;
         questFilter = rawFilter = page = selected = firstVisible = 0;
         rawItems.clear();
         questItems.clear();

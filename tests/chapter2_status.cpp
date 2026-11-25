@@ -1,3 +1,4 @@
+#include "../src/adarmos.hpp"
 #include "../src/albatros.hpp"
 #include "../src/departure.hpp"
 #include "../src/tamora.hpp"
@@ -17,6 +18,8 @@ using namespace OQIKondehra;
 static std::map<std::string, int> flags{{"KAPITEL", 2}, {"CURRENTLEVEL", 14}};
 static std::map<std::pair<std::string, unsigned int>, int> arrayValues;
 static std::map<std::string, int> dialogs;
+static std::map<std::string, int> npcAiVars;
+static std::map<std::string, int> nearbyNpcs;
 static std::set<std::string> actors;
 static std::set<std::string> items;
 static std::map<std::string, int> quantities;
@@ -36,6 +39,7 @@ static std::optional<int> ArrayValue(const char* name, unsigned int index) {
 static std::optional<int> Told(const char* name) { return Read(dialogs, name); }
 static bool OnAlbatros() { return Value("CURRENTLEVEL") == 16 || Value("CURRENTLEVEL") == 29; }
 static bool OnTamora() { return Value("CURRENTLEVEL") == 14; }
+static bool OnAdarmos() { return Value("ADARMOS_ZEN") == 7 && Value("CURRENTLEVEL") == 7; }
 static int UnpackedAmount(const char* name) {
     return Read(quantities, name).value_or(static_cast<int>(items.count(name)));
 }
@@ -44,6 +48,8 @@ static int InventoryAmount(const char* name) {
     return UnpackedAmount(name) + Read(packedQuantities, name).value_or(0);
 }
 static bool FindLivingNpc(const char* name) { return actors.count(name) != 0; }
+static std::optional<int> NpcFirstAiVar(const char* name) { return Read(npcAiVars, name); }
+static std::optional<int> NpcNearWaypoint(const char* name, const char*, float) { return Read(nearbyNpcs, name); }
 static Start StartRule(QuestId) { return Start::Unknown; }
 
 static Start Require(std::initializer_list<std::pair<std::optional<int>, int>> checks) {
@@ -62,8 +68,9 @@ static Start WithNpc(Start ready, const char* name) {
 
 #include "../src/tamora_rules.hpp"
 #include "../src/albatros_rules.hpp"
+#include "../src/adarmos_rules.hpp"
 
-enum class Location { Albatros, Kondehra, Tamora };
+enum class Location { Albatros, Kondehra, Tamora, Adarmos };
 static Location chosenLocation = Location::Kondehra;
 static Location SelectedLocation() { return chosenLocation; }
 #include "../src/departure_rules.hpp"
@@ -177,6 +184,51 @@ static void TestAlbatros() {
     items.insert("ITWR_SEAMAP_RAUHBEINSSCHATZKARTE");
     flags["JONESSCHATZKARTEGEFUNDEN"] = 0;
     Check(Inspect(A::PirateGold, {0}).status == Status::Available);
+}
+
+static void TestAdarmos() {
+    namespace A = OQIAdarmos;
+    using namespace OQIDeparture;
+    chosenLocation = Location::Adarmos;
+    flags = {{"KAPITEL", 2}, {"CURRENTLEVEL", 7}, {"ADARMOS_ZEN", 7},
+             {"EMILIOSZETTELGELESEN", 0}, {"FIGHT_LOST", 1}};
+    actors = {A::elder, A::officer, A::bantor, A::dale, A::kosta, A::rosh, A::alvares, A::emilio};
+    dialogs = {{"DIA_OFFIZIER_HI", 0}, {"DIA_DAD_FIN", 0}, {"DIA_DAD_WHATHAPPENSNOW", 0},
+        {"DIA_DALE_PISSEINS", 0}, {"DIA_KOSTA_MELDETWOOFTWO", 0}, {"DIA_EMILIO_LETTERA", 0},
+        {"DIA_DAD_ERSTERABSCHIED", 0}, {"DIA_ADDON_AL_MAUL", 0}, {"DIA_ADDON_AL_MAUL_GAVE", 0}};
+    items.clear();
+    const auto inspect = [](A::QuestId id, Facts facts) { return InspectAdarmos(id, facts).status; };
+    Check(A::quests.size() == 17);
+    Check(inspect(A::Corsairs, {0}) == Status::Available);
+    Check(inspect(A::Mission, {1}) == Status::Running);
+    Check(inspect(A::Rosh, {0}) == Status::Later);
+    dialogs["DIA_DAD_FIN"] = 1;
+    Check(inspect(A::Rosh, {0}) == Status::Available);
+    dialogs["DIA_KOSTA_MELDETWOOFTWO"] = 1;
+    Check(inspect(A::Rosh, {0}) == Status::Done);
+    Check(inspect(A::Amulet, {1, Journal::Success}) == Status::Done);
+    Check(inspect(A::Herbs, {3, Journal::Failure}) == Status::Missed);
+    nearbyNpcs[A::dale] = 0;
+    Check(inspect(A::Dice, {0}) == Status::Later);
+    nearbyNpcs[A::dale] = 1;
+    Check(inspect(A::Dice, {0}) == Status::Available);
+    Check(inspect(A::RoshIntel, {0}) == Status::Later);
+    dialogs["DIA_ADDON_AL_MAUL"] = 1;
+    npcAiVars[A::alvares] = 1;
+    Check(inspect(A::RoshIntel, {0}) == Status::Available);
+    items.insert("ITWR_LETTERTOEMILIOFOUND");
+    Check(inspect(A::Note, {0}) == Status::Available);
+    dialogs["DIA_EMILIO_LETTERA"] = 1;
+    Check(inspect(A::Emilio, {0}) == Status::Missed);
+    Check(inspect(A::Emilio, {1}) == Status::Running);
+    Check(inspect(A::Emilio, {2}) == Status::Done);
+    flags["MIS_ADARMOSMISSION"] = 1;
+    Check(DepartureStep(A::Fleet, {1}, Status::Running) == Step::Open);
+    flags["MIS_ADARMOSMISSION"] = 2;
+    Check(DepartureStep(A::Fleet, {1}, Status::Running) == Step::Done);
+    Check(DepartureStep(A::LostSon, {1}, Status::Running) == Step::Open);
+    dialogs["DIA_DAD_ERSTERABSCHIED"] = 1;
+    Check(DepartureStep(A::LostSon, {1}, Status::Running) == Step::Done);
 }
 
 static void TestDeparture() {
@@ -297,6 +349,7 @@ static void TestWalkthroughCoverage() {
     check(OQIKondehra::quests);
     check(OQIAlbatros::quests);
     check(OQITamora::quests);
+    check(OQIAdarmos::quests);
 
     const std::wstring_view chronicles = OQITamora::quests[OQITamora::Chronicles].walkthrough;
     for (const auto* volume : {L"Том I.", L"Том II.", L"Том III.", L"Том IV.", L"Том V."}) {
@@ -307,6 +360,7 @@ static void TestWalkthroughCoverage() {
 int main() {
     TestTamora();
     TestAlbatros();
+    TestAdarmos();
     TestDeparture();
     TestWalkthroughCoverage();
 }
