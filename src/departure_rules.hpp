@@ -171,11 +171,15 @@ static Step TamoraDeparture(OQITamora::QuestId id, const Facts& facts, Status st
     case T::Dress: {
         if (status == Status::Done) return Step::Done;
         if (status == Status::Missed) return Step::Missed;
-        // Isabell offers the quest here. The dress is obtained off the island.
+        constexpr const char* isabell = "VLK_7710_BUERGERIN";
+        const auto offerUsed = Told("DIA_7710_BUERGERIN_HILFE");
+        // Taking the quest is the local objective. The dress comes from off the island.
+        if (HasUntakenQuest(facts)) {
+            return offerUsed == 0 && NpcsAvailable({isabell}) ? Step::Open : Step::Unknown;
+        }
         if (!HasUnpackedItem("ITAR_QUEEN")) return Step::Deferred;
-        const bool canTurnIn = facts.flag == 1 && Told("DIA_7710_BUERGERIN_HILFE") == 1
-            && NpcsAvailable({"VLK_7710_BUERGERIN"});
-        return status == Status::Available || canTurnIn ? Step::Open : Step::Deferred;
+        const bool canTurnIn = facts.flag == 1 && offerUsed == 1 && NpcsAvailable({isabell});
+        return canTurnIn ? Step::Open : Step::Deferred;
     }
     case T::Griffin:
         return Whole(status, NpcsAvailable({"NONE_22009_SCHAEFER"}));

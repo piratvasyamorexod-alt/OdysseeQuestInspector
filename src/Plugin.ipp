@@ -401,7 +401,7 @@ struct JournalRect {
     }
 };
 
-static constexpr char version[] = "1.1.1";
+static constexpr char version[] = "1.1.2";
 static constexpr unsigned long lineInk = 0xFF655740;
 static constexpr unsigned long bronzeInk = 0xFFDDB67D;
 
