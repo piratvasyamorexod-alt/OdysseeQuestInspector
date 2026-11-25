@@ -1,22 +1,5 @@
 #pragma once
 
-namespace OQIAdarmos {
-
-inline constexpr const char* elder = "VLK_6006_VATER";
-inline constexpr const char* officer = "BDT_7970_KORSARENOFFIZIER";
-inline constexpr const char* mount = "BDT_7979_MOUNT";
-inline constexpr const char* hunter = "BDT_7980_PLUNDERERDERKORSAREN";
-inline constexpr const char* bjorn = "BDT_7981_BJORNDERWILDE";
-inline constexpr const char* emilio = "BDT_6032_EMILIO";
-inline constexpr const char* kosta = "SLD_6022_KOSTA";
-inline constexpr const char* rosh = "SLD_6034_ROSH";
-inline constexpr const char* alvares = "NONE_6026_ALVARES";
-inline constexpr const char* dale = "SLD_6019_DALE";
-inline constexpr const char* erik = "BDT_7976_KORSAR";
-inline constexpr const char* bantor = "VLK_5031_BANTOR";
-
-}  // namespace OQIAdarmos
-
 static Start AdarmosStartRule(OQIAdarmos::QuestId id) {
     namespace A = OQIAdarmos;
     const auto chapter = Value("KAPITEL");

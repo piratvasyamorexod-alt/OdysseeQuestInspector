@@ -13,6 +13,8 @@
 #include <string_view>
 #include <utility>
 
+namespace {
+
 using namespace OQIKondehra;
 
 static std::map<std::string, int> flags{{"KAPITEL", 2}, {"CURRENTLEVEL", 14}};
@@ -356,6 +358,8 @@ static void TestWalkthroughCoverage() {
         Check(chronicles.find(volume) != std::wstring_view::npos);
     }
 }
+
+}  // namespace
 
 int main() {
     TestTamora();
